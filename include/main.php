@@ -1,5 +1,4 @@
 <?php
-use \NeuronAI\Chat\Messages\UserMessage;
 
 class Plugitify_Main {
     public function __construct() {
@@ -15,7 +14,8 @@ class Plugitify_Main {
             'include/class/Plugitify_DB.php',
             'include/class/Plugitify-chat-logs.php',
             'include/class/Plugitify-panel.php',
-            'include/class/Plugitify-agent.php',
+            // 'include/class/Plugitify-agent.php', // Removed - using Agent Framework JS instead
+            'include/class/Plugitify-tools-api.php', // API endpoints for tools
             'include/class/Plugitify-admin-menu.php',
         ];
         foreach ($includes as $include) {
