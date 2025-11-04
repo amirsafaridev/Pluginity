@@ -1,0 +1,5 @@
+{
+    "require": {
+        "neuron-core/neuron-ai": "^1.8"
+    }
+}
