@@ -17,6 +17,11 @@ class Plugitify_Tools_API {
         add_action('wp_ajax_plugitify_tool_list_plugins', array($this, 'handle_list_plugins'));
         add_action('wp_ajax_plugitify_tool_deactivate_plugin', array($this, 'handle_deactivate_plugin'));
         add_action('wp_ajax_plugitify_tool_extract_plugin_structure', array($this, 'handle_extract_plugin_structure'));
+        add_action('wp_ajax_plugitify_tool_toggle_wp_debug', array($this, 'handle_toggle_wp_debug'));
+        add_action('wp_ajax_plugitify_tool_read_debug_log', array($this, 'handle_read_debug_log'));
+        add_action('wp_ajax_plugitify_tool_check_wp_debug_status', array($this, 'handle_check_wp_debug_status'));
+        add_action('wp_ajax_plugitify_tool_search_replace_in_file', array($this, 'handle_search_replace_in_file'));
+        add_action('wp_ajax_plugitify_tool_update_chat_title', array($this, 'handle_update_chat_title'));
     }
 
     /**
@@ -186,6 +191,15 @@ class Plugitify_Tools_API {
                     }
                 }
                 break;
+            case 'search_replace_in_file':
+                if (isset($details['file_path'])) {
+                    $fileName = basename($details['file_path']);
+                    $parts[] = "File: {$fileName}";
+                    if (isset($details['replacements_count'])) {
+                        $parts[] = "Replacements: {$details['replacements_count']}";
+                    }
+                }
+                break;
             case 'extract_plugin_structure':
                 if (isset($details['plugin_name'])) {
                     $parts[] = "Plugin: {$details['plugin_name']}";
@@ -200,6 +214,19 @@ class Plugitify_Tools_API {
                 if (isset($details['plugin_file'])) {
                     $parts[] = "Plugin: " . basename($details['plugin_file'], '.php');
                 }
+                break;
+            case 'toggle_wp_debug':
+                if (isset($details['enable'])) {
+                    $parts[] = $details['enable'] ? 'Enable' : 'Disable';
+                }
+                break;
+            case 'read_debug_log':
+                if (isset($details['lines'])) {
+                    $parts[] = "Lines: {$details['lines']}";
+                }
+                break;
+            case 'check_wp_debug_status':
+                // No additional details needed
                 break;
         }
         
@@ -220,6 +247,10 @@ class Plugitify_Tools_API {
             'extract_plugin_structure' => 'Extracting plugin structure',
             'list_plugins' => 'Listing WordPress plugins',
             'deactivate_plugin' => 'Deactivating WordPress plugin',
+            'toggle_wp_debug' => 'Toggling WP_DEBUG mode',
+            'read_debug_log' => 'Reading WordPress debug log',
+            'check_wp_debug_status' => 'Checking WP_DEBUG status',
+            'search_replace_in_file' => 'Searching and replacing text in file',
         ];
         
         $baseDesc = $descriptions[$toolName] ?? "Executing tool: {$toolName}";
@@ -272,6 +303,44 @@ class Plugitify_Tools_API {
     }
 
     /**
+     * Check if a path is within the Pluginity plugin directory (protected)
+     * Returns true if the path is protected and should be blocked
+     */
+    private function isProtectedPath(string $path): bool {
+        // Get the Pluginity plugin directory
+        $plugitifyDir = defined('PLUGITIFY_DIR') ? PLUGITIFY_DIR : __DIR__ . '/../../';
+        $plugitifyDir = realpath($plugitifyDir);
+        
+        if (!$plugitifyDir) {
+            // Fallback: check by name if realpath fails
+            $normalizedPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $path);
+            if (stripos($normalizedPath, 'plugitify') !== false || 
+                stripos($normalizedPath, 'Pluginity') !== false) {
+                return true;
+            }
+            return false;
+        }
+        
+        // Normalize paths for comparison
+        $pathReal = realpath($path);
+        if ($pathReal) {
+            // Check if the path is within the Pluginity directory
+            if (strpos($pathReal, $plugitifyDir) === 0) {
+                return true;
+            }
+        }
+        
+        // Also check by name as a fallback (case-insensitive)
+        $normalizedPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $path);
+        if (stripos($normalizedPath, 'plugitify') !== false || 
+            stripos($normalizedPath, 'Pluginity') !== false) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
      * Handle create_directory tool
      */
     public function handle_create_directory() {
@@ -296,6 +365,12 @@ class Plugitify_Tools_API {
         }
         
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
+        
+        // Check if path is protected (Pluginity plugin directory)
+        if ($this->isProtectedPath($fullPath)) {
+            wp_send_json_error(array('message' => 'ERROR: Cannot create directories in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+            return;
+        }
         
         if (!is_dir($fullPath)) {
             if (mkdir($fullPath, 0755, true)) {
@@ -361,6 +436,12 @@ class Plugitify_Tools_API {
         
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
+        // Check if path is protected (Pluginity plugin directory)
+        if ($this->isProtectedPath($fullPath)) {
+            wp_send_json_error(array('message' => 'ERROR: Cannot create files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+            return;
+        }
+        
         $dir = dirname($fullPath);
         if (!is_dir($dir)) {
             mkdir($dir, 0755, true);
@@ -399,18 +480,10 @@ class Plugitify_Tools_API {
         
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
-        // Check if path is in Pluginity/plugitify directory (CRITICAL: Never allow deletion)
-        $plugitifyDir = defined('PLUGITIFY_DIR') ? PLUGITIFY_DIR : __DIR__ . '/../../';
-        $plugitifyDir = realpath($plugitifyDir);
-        $fullPathReal = realpath($fullPath);
-        
-        if ($plugitifyDir && $fullPathReal) {
-            if (strpos($fullPathReal, $plugitifyDir) === 0 || 
-                stripos($fullPath, 'plugitify') !== false || 
-                stripos($fullPath, 'Pluginity') !== false) {
-                wp_send_json_error(array('message' => 'ERROR: Cannot delete files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
-                return;
-            }
+        // Check if path is protected (Pluginity plugin directory)
+        if ($this->isProtectedPath($fullPath)) {
+            wp_send_json_error(array('message' => 'ERROR: Cannot delete files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+            return;
         }
         
         if (!file_exists($fullPath)) {
@@ -456,18 +529,10 @@ class Plugitify_Tools_API {
         
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
-        // Check if path is in Pluginity/plugitify directory (CRITICAL: Never allow deletion)
-        $plugitifyDir = defined('PLUGITIFY_DIR') ? PLUGITIFY_DIR : __DIR__ . '/../../';
-        $plugitifyDir = realpath($plugitifyDir);
-        $fullPathReal = realpath($fullPath);
-        
-        if ($plugitifyDir && $fullPathReal) {
-            if (strpos($fullPathReal, $plugitifyDir) === 0 || 
-                stripos($fullPath, 'plugitify') !== false || 
-                stripos($fullPath, 'Pluginity') !== false) {
-                wp_send_json_error(array('message' => 'ERROR: Cannot delete directories in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
-                return;
-            }
+        // Check if path is protected (Pluginity plugin directory)
+        if ($this->isProtectedPath($fullPath)) {
+            wp_send_json_error(array('message' => 'ERROR: Cannot delete directories in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+            return;
         }
         
         if (!is_dir($fullPath)) {
@@ -530,6 +595,12 @@ class Plugitify_Tools_API {
         }
         
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
+        
+        // Check if path is protected (Pluginity plugin directory)
+        if ($this->isProtectedPath($fullPath)) {
+            wp_send_json_error(array('message' => 'ERROR: Cannot read files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+            return;
+        }
         
         if (!file_exists($fullPath)) {
             wp_send_json_error(array('message' => "File not found: {$fullPath}"));
@@ -604,6 +675,12 @@ class Plugitify_Tools_API {
         
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
+        // Check if path is protected (Pluginity plugin directory)
+        if ($this->isProtectedPath($fullPath)) {
+            wp_send_json_error(array('message' => 'ERROR: Cannot edit files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+            return;
+        }
+        
         if (!file_exists($fullPath)) {
             wp_send_json_error(array('message' => "File not found: {$fullPath}"));
             return;
@@ -620,27 +697,68 @@ class Plugitify_Tools_API {
             return;
         }
         
+        // Normalize line endings to \n (handle both \r\n and \n)
+        $content = str_replace("\r\n", "\n", $content);
+        $content = str_replace("\r", "\n", $content);
+        
         $lines = explode("\n", $content);
         
-        if ($line_number < 1 || $line_number > count($lines)) {
-            wp_send_json_error(array('message' => "Line number {$line_number} is out of range. File has " . count($lines) . " lines."));
+        // Remove empty line at the end if file ends with newline
+        if (count($lines) > 0 && empty($lines[count($lines) - 1])) {
+            array_pop($lines);
+        }
+        
+        $total_lines = count($lines);
+        
+        // Handle out of range line numbers intelligently
+        if ($line_number < 1) {
+            wp_send_json_error(array('message' => "Line number must be greater than 0. File has {$total_lines} lines."));
             return;
         }
         
-        $line_count = max(1, $line_count);
-        $end_line = min($line_number + $line_count - 1, count($lines));
-        
-        $new_lines = explode("\n", $new_content);
-        
-        $before = array_slice($lines, 0, $line_number - 1);
-        $after = array_slice($lines, $end_line);
-        $updated_lines = array_merge($before, $new_lines, $after);
+        // If line number exceeds file length, append to end of file instead of error
+        if ($line_number > $total_lines) {
+            // Append new content to end of file
+            $new_lines = explode("\n", $new_content);
+            $updated_lines = array_merge($lines, $new_lines);
+            $action_message = "appended to end of file (line {$line_number} requested, file has {$total_lines} lines)";
+        } else {
+            // Normal edit operation
+            $line_count = max(1, $line_count);
+            $end_line = min($line_number + $line_count - 1, $total_lines);
+            
+            $new_lines = explode("\n", $new_content);
+            
+            $before = array_slice($lines, 0, $line_number - 1);
+            $after = array_slice($lines, $end_line);
+            $updated_lines = array_merge($before, $new_lines, $after);
+            $action_message = "edited line(s) {$line_number}" . ($line_count > 1 ? "-{$end_line}" : "");
+        }
         
         $new_content_full = implode("\n", $updated_lines);
-        if (file_put_contents($fullPath, $new_content_full) !== false) {
-            wp_send_json_success(array('result' => "Successfully edited line(s) {$line_number}" . ($line_count > 1 ? "-{$end_line}" : "") . " in file: {$fullPath}"));
-        } else {
-            wp_send_json_error(array('message' => "Failed to write file: {$fullPath}"));
+        
+        // Try to write file, with error handling
+        try {
+            $write_result = @file_put_contents($fullPath, $new_content_full);
+            if ($write_result === false) {
+                // Try alternative method: use file handle
+                $handle = @fopen($fullPath, 'w');
+                if ($handle === false) {
+                    wp_send_json_error(array('message' => "Failed to write file: {$fullPath}. Check file permissions."));
+                    return;
+                }
+                $write_result = @fwrite($handle, $new_content_full);
+                @fclose($handle);
+                
+                if ($write_result === false) {
+                    wp_send_json_error(array('message' => "Failed to write file: {$fullPath}. Check file permissions."));
+                    return;
+                }
+            }
+            
+            wp_send_json_success(array('result' => "Successfully {$action_message} in file: {$fullPath}"));
+        } catch (Exception $e) {
+            wp_send_json_error(array('message' => "Error writing file: {$fullPath}. " . $e->getMessage()));
         }
     }
 
@@ -803,6 +921,12 @@ class Plugitify_Tools_API {
         $plugin_path = rtrim($pluginsDir, '/\\') . '/' . $plugin_name;
         $plugin_path = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $plugin_path);
         
+        // Check if path is protected (Pluginity plugin directory)
+        if ($this->isProtectedPath($plugin_path)) {
+            wp_send_json_error(array('message' => 'ERROR: Cannot extract structure from the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+            return;
+        }
+        
         if (!is_dir($plugin_path)) {
             wp_send_json_error(array('message' => "Plugin directory not found: {$plugin_path}"));
             return;
@@ -946,6 +1070,457 @@ class Plugitify_Tools_API {
         }
         
         wp_send_json_success(array('result' => $output));
+    }
+
+    /**
+     * Handle toggle_wp_debug tool
+     */
+    public function handle_toggle_wp_debug() {
+        $context = $this->validateRequest();
+        $enable = isset($_POST['enable']) ? filter_var($_POST['enable'], FILTER_VALIDATE_BOOLEAN) : null;
+        
+        if ($enable === null) {
+            wp_send_json_error(array('message' => 'Enable parameter is required (true or false)'));
+            return;
+        }
+
+        // Auto manage task/step
+        $this->autoManageTaskStep('toggle_wp_debug', ['enable' => $enable]);
+
+        // Get wp-config.php path
+        $wpConfigPath = defined('ABSPATH') ? ABSPATH . 'wp-config.php' : '';
+        
+        if (!file_exists($wpConfigPath)) {
+            wp_send_json_error(array('message' => "wp-config.php not found at: {$wpConfigPath}"));
+            return;
+        }
+        
+        if (!is_writable($wpConfigPath)) {
+            wp_send_json_error(array('message' => "wp-config.php is not writable. Please check file permissions."));
+            return;
+        }
+        
+        // Read wp-config.php
+        $content = file_get_contents($wpConfigPath);
+        if ($content === false) {
+            wp_send_json_error(array('message' => "Failed to read wp-config.php"));
+            return;
+        }
+        
+        // If enabling, clear the debug.log file first
+        if ($enable) {
+            $debugLogPath = defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR . '/debug.log' : ABSPATH . 'wp-content/debug.log';
+            if (file_exists($debugLogPath)) {
+                @unlink($debugLogPath);
+            }
+        }
+        
+        // Patterns to find WP_DEBUG settings
+        $patterns = [
+            'WP_DEBUG' => "/define\s*\(\s*['\"]WP_DEBUG['\"]\s*,\s*(?:true|false)\s*\)\s*;/i",
+            'WP_DEBUG_LOG' => "/define\s*\(\s*['\"]WP_DEBUG_LOG['\"]\s*,\s*(?:true|false)\s*\)\s*;/i",
+            'WP_DEBUG_DISPLAY' => "/define\s*\(\s*['\"]WP_DEBUG_DISPLAY['\"]\s*,\s*(?:true|false)\s*\)\s*;/i",
+        ];
+        
+        $debugValue = $enable ? 'true' : 'false';
+        $logValue = $enable ? 'true' : 'false';
+        $displayValue = $enable ? 'false' : 'false'; // Always false for display
+        
+        // Replace existing defines or add them
+        $hasDebug = preg_match($patterns['WP_DEBUG'], $content);
+        $hasLog = preg_match($patterns['WP_DEBUG_LOG'], $content);
+        $hasDisplay = preg_match($patterns['WP_DEBUG_DISPLAY'], $content);
+        
+        if ($hasDebug) {
+            $content = preg_replace($patterns['WP_DEBUG'], "define( 'WP_DEBUG', {$debugValue} );", $content);
+        } else {
+            // Add after database settings (before stop editing line)
+            $content = preg_replace(
+                "/(\/\* Add any custom values between this line.*?\*\/)/s",
+                "define( 'WP_DEBUG', {$debugValue} );\n\n$1",
+                $content
+            );
+        }
+        
+        if ($hasLog) {
+            $content = preg_replace($patterns['WP_DEBUG_LOG'], "define( 'WP_DEBUG_LOG', {$logValue} );", $content);
+        } else {
+            // Add after WP_DEBUG
+            $content = preg_replace(
+                "/(define\s*\(\s*['\"]WP_DEBUG['\"]\s*,\s*(?:true|false)\s*\)\s*;)/i",
+                "$1\ndefine( 'WP_DEBUG_LOG', {$logValue} );",
+                $content
+            );
+        }
+        
+        if ($hasDisplay) {
+            $content = preg_replace($patterns['WP_DEBUG_DISPLAY'], "define( 'WP_DEBUG_DISPLAY', {$displayValue} );", $content);
+        } else {
+            // Add after WP_DEBUG_LOG
+            $content = preg_replace(
+                "/(define\s*\(\s*['\"]WP_DEBUG_LOG['\"]\s*,\s*(?:true|false)\s*\)\s*;)/i",
+                "$1\ndefine( 'WP_DEBUG_DISPLAY', {$displayValue} );",
+                $content
+            );
+        }
+        
+        // Write back to wp-config.php
+        $result = file_put_contents($wpConfigPath, $content);
+        if ($result === false) {
+            wp_send_json_error(array('message' => "Failed to write to wp-config.php"));
+            return;
+        }
+        
+        $status = $enable ? 'enabled' : 'disabled';
+        $message = "WP_DEBUG has been {$status} successfully.";
+        
+        if ($enable) {
+            $message .= "\nDebug logs will be saved to wp-content/debug.log";
+            $message .= "\nPrevious log file has been cleared.";
+        }
+        
+        wp_send_json_success(array('result' => $message));
+    }
+
+    /**
+     * Handle read_debug_log tool
+     */
+    public function handle_read_debug_log() {
+        $context = $this->validateRequest();
+        $lines = isset($_POST['lines']) ? intval($_POST['lines']) : 100; // Default last 100 lines
+        
+        // Auto manage task/step
+        $this->autoManageTaskStep('read_debug_log', ['lines' => $lines]);
+
+        // Get debug.log path
+        $debugLogPath = defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR . '/debug.log' : ABSPATH . 'wp-content/debug.log';
+        
+        if (!file_exists($debugLogPath)) {
+            wp_send_json_error(array('message' => "Debug log file not found at: {$debugLogPath}\n\nMake sure WP_DEBUG and WP_DEBUG_LOG are enabled in wp-config.php"));
+            return;
+        }
+        
+        if (!is_readable($debugLogPath)) {
+            wp_send_json_error(array('message' => "Debug log file is not readable. Please check file permissions."));
+            return;
+        }
+        
+        // Get file size
+        $fileSize = filesize($debugLogPath);
+        if ($fileSize === 0) {
+            wp_send_json_success(array('result' => "Debug log file is empty.\n\nNo errors have been logged yet."));
+            return;
+        }
+        
+        // Read the file
+        $content = file_get_contents($debugLogPath);
+        if ($content === false) {
+            wp_send_json_error(array('message' => "Failed to read debug log file"));
+            return;
+        }
+        
+        // Split into lines
+        $allLines = explode("\n", $content);
+        $totalLines = count($allLines);
+        
+        // Get last N lines if specified
+        if ($lines > 0 && $lines < $totalLines) {
+            $logLines = array_slice($allLines, -$lines);
+            $output = "Debug Log (Last {$lines} of {$totalLines} lines | File size: " . size_format($fileSize) . "):\n";
+            $output .= str_repeat("=", 80) . "\n\n";
+            $output .= implode("\n", $logLines);
+        } else {
+            $output = "Debug Log (All {$totalLines} lines | File size: " . size_format($fileSize) . "):\n";
+            $output .= str_repeat("=", 80) . "\n\n";
+            $output .= $content;
+        }
+        
+        wp_send_json_success(array('result' => $output));
+    }
+
+    /**
+     * Handle check_wp_debug_status tool
+     */
+    public function handle_check_wp_debug_status() {
+        $context = $this->validateRequest();
+        
+        // Auto manage task/step
+        $this->autoManageTaskStep('check_wp_debug_status', []);
+
+        // Get current WordPress constants
+        $wpDebug = defined('WP_DEBUG') ? WP_DEBUG : false;
+        $wpDebugLog = defined('WP_DEBUG_LOG') ? WP_DEBUG_LOG : false;
+        $wpDebugDisplay = defined('WP_DEBUG_DISPLAY') ? WP_DEBUG_DISPLAY : false;
+        
+        // Check debug.log file
+        $debugLogPath = defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR . '/debug.log' : ABSPATH . 'wp-content/debug.log';
+        $logExists = file_exists($debugLogPath);
+        $logSize = $logExists ? filesize($debugLogPath) : 0;
+        $logLines = 0;
+        
+        if ($logExists && $logSize > 0) {
+            $content = file_get_contents($debugLogPath);
+            if ($content !== false) {
+                $logLines = count(explode("\n", $content));
+            }
+        }
+        
+        // Build status report
+        $output = "WordPress Debug Status:\n";
+        $output .= str_repeat("=", 80) . "\n\n";
+        
+        $output .= "📊 Debug Mode Configuration:\n";
+        $output .= "  • WP_DEBUG: " . ($wpDebug ? "✅ Enabled (true)" : "❌ Disabled (false)") . "\n";
+        $output .= "  • WP_DEBUG_LOG: " . ($wpDebugLog ? "✅ Enabled (true)" : "❌ Disabled (false)") . "\n";
+        $output .= "  • WP_DEBUG_DISPLAY: " . ($wpDebugDisplay ? "⚠️ Enabled (true)" : "✅ Disabled (false)") . "\n";
+        $output .= "\n";
+        
+        $output .= "📝 Debug Log File:\n";
+        $output .= "  • Path: {$debugLogPath}\n";
+        $output .= "  • Status: " . ($logExists ? "✅ File exists" : "❌ File not found") . "\n";
+        
+        if ($logExists) {
+            $output .= "  • Size: " . size_format($logSize) . "\n";
+            $output .= "  • Lines: " . number_format($logLines) . "\n";
+            
+            if ($logSize === 0) {
+                $output .= "  • Content: Empty (no errors logged yet)\n";
+            } else {
+                $output .= "  • Content: Contains error logs\n";
+            }
+        }
+        
+        $output .= "\n";
+        $output .= "💡 Overall Status: ";
+        
+        if ($wpDebug && $wpDebugLog && !$wpDebugDisplay) {
+            $output .= "✅ Debug mode is properly configured (logging to file, not displaying on screen)\n";
+        } elseif ($wpDebug && $wpDebugLog && $wpDebugDisplay) {
+            $output .= "⚠️ Debug mode is enabled, but WP_DEBUG_DISPLAY is also enabled (errors will show on screen)\n";
+        } elseif ($wpDebug && !$wpDebugLog) {
+            $output .= "⚠️ Debug mode is enabled, but logging to file is disabled\n";
+        } elseif (!$wpDebug) {
+            $output .= "❌ Debug mode is disabled\n";
+        } else {
+            $output .= "⚠️ Debug configuration is incomplete\n";
+        }
+        
+        $output .= "\n";
+        $output .= "📌 Recommendations:\n";
+        
+        if (!$wpDebug) {
+            $output .= "  • Use toggle_wp_debug tool with enable=true to enable debug mode\n";
+        } elseif ($wpDebug && !$wpDebugLog) {
+            $output .= "  • Enable WP_DEBUG_LOG to save errors to a log file\n";
+        } elseif ($wpDebug && $wpDebugDisplay) {
+            $output .= "  • Disable WP_DEBUG_DISPLAY to prevent errors from showing on screen (security risk)\n";
+        } elseif ($logExists && $logSize > 1048576) { // 1MB
+            $output .= "  • Debug log file is large (" . size_format($logSize) . "). Consider reviewing and clearing it.\n";
+        } else {
+            $output .= "  • Configuration looks good! ✅\n";
+        }
+        
+        wp_send_json_success(array('result' => $output));
+    }
+
+    /**
+     * Handle search_replace_in_file tool
+     */
+    public function handle_search_replace_in_file() {
+        $context = $this->validateRequest();
+        $file_path = isset($_POST['file_path']) ? sanitize_text_field($_POST['file_path']) : '';
+        $replacements = isset($_POST['replacements']) ? $_POST['replacements'] : '';
+        
+        // Decode replacements if it was JSON encoded
+        if (is_string($replacements)) {
+            $replacements = json_decode(stripslashes($replacements), true);
+        }
+        
+        if (empty($file_path)) {
+            wp_send_json_error(array('message' => 'File path is required'));
+            return;
+        }
+        
+        if (empty($replacements) || !is_array($replacements)) {
+            wp_send_json_error(array('message' => 'Replacements array is required. Format: [{"search": "old text", "replace": "new text"}, ...]'));
+            return;
+        }
+
+        // Auto manage task/step
+        $this->autoManageTaskStep('search_replace_in_file', [
+            'file_path' => $file_path,
+            'replacements_count' => count($replacements)
+        ]);
+
+        $pluginsDir = $this->getPluginsDir();
+        $file_path = ltrim($file_path, '/\\');
+        
+        if (file_exists($file_path)) {
+            $fullPath = $file_path;
+        } elseif (defined('ABSPATH') && file_exists(ABSPATH . $file_path)) {
+            $fullPath = ABSPATH . $file_path;
+        } elseif (strpos($file_path, $pluginsDir) !== 0) {
+            $fullPath = rtrim($pluginsDir, '/\\') . '/' . $file_path;
+        } else {
+            $fullPath = $file_path;
+        }
+        
+        $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
+        
+        // Check if path is protected (Pluginity plugin directory)
+        if ($this->isProtectedPath($fullPath)) {
+            wp_send_json_error(array('message' => 'ERROR: Cannot edit files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+            return;
+        }
+        
+        if (!file_exists($fullPath)) {
+            wp_send_json_error(array('message' => "File not found: {$fullPath}"));
+            return;
+        }
+        
+        if (!is_file($fullPath)) {
+            wp_send_json_error(array('message' => "Path is not a file: {$fullPath}"));
+            return;
+        }
+        
+        // Read file content
+        $content = file_get_contents($fullPath);
+        if ($content === false) {
+            wp_send_json_error(array('message' => "Failed to read file: {$fullPath}"));
+            return;
+        }
+        
+        $originalContent = $content;
+        $totalReplacements = 0;
+        $replacementDetails = [];
+        
+        // Process each replacement
+        foreach ($replacements as $index => $replacement) {
+            if (!isset($replacement['search']) || !isset($replacement['replace'])) {
+                wp_send_json_error(array('message' => "Invalid replacement at index {$index}. Each replacement must have 'search' and 'replace' keys."));
+                return;
+            }
+            
+            $search = $replacement['search'];
+            $replace = $replacement['replace'];
+            $replaceAll = isset($replacement['replace_all']) ? (bool)$replacement['replace_all'] : true;
+            
+            // Decode if base64 encoded
+            if (isset($replacement['search_encoded']) && $replacement['search_encoded'] === '1') {
+                $search = base64_decode($search, true);
+            }
+            if (isset($replacement['replace_encoded']) && $replacement['replace_encoded'] === '1') {
+                $replace = base64_decode($replace, true);
+            }
+            
+            // Count occurrences before replacement
+            $occurrencesBefore = substr_count($content, $search);
+            
+            if ($occurrencesBefore === 0) {
+                $replacementDetails[] = [
+                    'search' => substr($search, 0, 50) . (strlen($search) > 50 ? '...' : ''),
+                    'found' => false,
+                    'count' => 0
+                ];
+                continue;
+            }
+            
+            // Perform replacement
+            if ($replaceAll) {
+                $content = str_replace($search, $replace, $content);
+                $replacementCount = $occurrencesBefore;
+            } else {
+                // Replace only first occurrence
+                $pos = strpos($content, $search);
+                if ($pos !== false) {
+                    $content = substr_replace($content, $replace, $pos, strlen($search));
+                    $replacementCount = 1;
+                } else {
+                    $replacementCount = 0;
+                }
+            }
+            
+            $totalReplacements += $replacementCount;
+            $replacementDetails[] = [
+                'search' => substr($search, 0, 50) . (strlen($search) > 50 ? '...' : ''),
+                'replace' => substr($replace, 0, 50) . (strlen($replace) > 50 ? '...' : ''),
+                'found' => true,
+                'count' => $replacementCount
+            ];
+        }
+        
+        // Check if any changes were made
+        if ($content === $originalContent) {
+            wp_send_json_error(array('message' => "No replacements were made. None of the search patterns were found in the file."));
+            return;
+        }
+        
+        // Write back to file
+        $result = file_put_contents($fullPath, $content);
+        if ($result === false) {
+            wp_send_json_error(array('message' => "Failed to write to file: {$fullPath}"));
+            return;
+        }
+        
+        // Build success message
+        $message = "Successfully processed {$totalReplacements} replacement(s) in file: {$fullPath}\n\n";
+        $message .= "Replacement Details:\n";
+        $message .= str_repeat("-", 60) . "\n";
+        
+        foreach ($replacementDetails as $i => $detail) {
+            $message .= "\n" . ($i + 1) . ". ";
+            if ($detail['found']) {
+                $message .= "✅ Replaced {$detail['count']} occurrence(s)\n";
+                $message .= "   Search: {$detail['search']}\n";
+                $message .= "   Replace: {$detail['replace']}\n";
+            } else {
+                $message .= "⚠️ Not found: {$detail['search']}\n";
+            }
+        }
+        
+        wp_send_json_success(array('result' => $message));
+    }
+
+    /**
+     * Handle update_chat_title tool
+     */
+    public function handle_update_chat_title() {
+        $context = $this->validateRequest();
+        $title = isset($_POST['title']) ? sanitize_text_field($_POST['title']) : '';
+        $chat_id = isset($_POST['chat_id']) ? intval($_POST['chat_id']) : 0;
+        
+        if (empty($title)) {
+            wp_send_json_error(array('message' => 'Title is required'));
+            return;
+        }
+        
+        if ($chat_id <= 0) {
+            wp_send_json_error(array('message' => 'Valid chat_id is required'));
+            return;
+        }
+
+        // Auto manage task/step
+        $this->autoManageTaskStep('update_chat_title', ['title' => $title, 'chat_id' => $chat_id]);
+
+        // Check if table exists
+        if (!\Plugitify_DB::tableExists('chat_history')) {
+            wp_send_json_error(array('message' => 'Database table does not exist'));
+            return;
+        }
+        
+        $user_id = get_current_user_id();
+        
+        // Update chat title
+        $updated = \Plugitify_DB::table('chat_history')
+            ->where('id', $chat_id)
+            ->where('user_id', $user_id)
+            ->update(array('title' => $title));
+
+        if ($updated) {
+            wp_send_json_success(array('result' => "Chat title updated successfully to: {$title}", 'title' => $title));
+        } else {
+            wp_send_json_error(array('message' => 'Failed to update chat title'));
+        }
     }
 }
 

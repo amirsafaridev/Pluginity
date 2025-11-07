@@ -342,6 +342,12 @@ class Agent {
         this.observers = {};
         this.taskManager = null;
         this.chatId = null;
+        // Circuit Breaker: Track consecutive errors to prevent infinite loops
+        this.errorTracker = {
+            consecutiveErrors: 0,
+            lastError: null,
+            maxRetries: 1  // Maximum consecutive errors before throwing
+        };
     }
 
     /**
@@ -500,32 +506,79 @@ class Agent {
 
                 // Update task step on success
                 if (this.taskManager && this.chatId && task && step) {
+                    // Truncate large results to prevent localStorage overflow
+                    const MAX_RESULT_LENGTH = 2000;
+                    let resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+                    if (resultStr.length > MAX_RESULT_LENGTH) {
+                        resultStr = resultStr.substring(0, MAX_RESULT_LENGTH) + `\n\n... (truncated, original length: ${resultStr.length} characters)`;
+                    }
+                    
                     this.taskManager.updateStep(this.chatId, task.id, step.id, {
                         status: 'completed',
-                        result: result,
-                        content: `Successfully executed ${toolCall.getName()}. Result: ${typeof result === 'string' ? result : JSON.stringify(result)}`
+                        result: resultStr,
+                        content: `Successfully executed ${toolCall.getName()}. Result: ${resultStr}`
                     });
                     this.notify('task-updated', { task, step });
                 }
 
                 this.notify('tool-called', { tool: registeredTool, result, task, step });
+                // Reset error tracker on success
+                this.errorTracker.consecutiveErrors = 0;
+                this.errorTracker.lastError = null;
             } catch (error) {
-                // Store error in toolCall
-                toolCall.setResult(null);
+                // CIRCUIT BREAKER: Check for infinite loop
+                const errorSignature = `${toolCall.getName()}:${error.message}`;
+                
+                // Check if this is the same error repeating
+                if (this.errorTracker.lastError === errorSignature) {
+                    this.errorTracker.consecutiveErrors++;
+                } else {
+                    // Different error, reset counter
+                    this.errorTracker.consecutiveErrors = 1;
+                    this.errorTracker.lastError = errorSignature;
+                }
+                
+                // If too many consecutive errors, throw to stop the loop
+                if (this.errorTracker.consecutiveErrors >= this.errorTracker.maxRetries) {
+                    console.error(`Circuit breaker activated: ${this.errorTracker.consecutiveErrors} consecutive errors for ${toolCall.getName()}`);
+                    
+                    // Update task as failed
+                    if (this.taskManager && this.chatId && task && step) {
+                        this.taskManager.updateStep(this.chatId, task.id, step.id, {
+                            status: 'failed',
+                            error: error.message,
+                            content: `Circuit breaker activated: Too many consecutive errors (${this.errorTracker.consecutiveErrors}). Error: ${error.message}`
+                        });
+                        this.notify('task-updated', { task, step });
+                    }
+                    
+                    // Reset tracker
+                    this.errorTracker.consecutiveErrors = 0;
+                    this.errorTracker.lastError = null;
+                    
+                    // Throw to stop the loop
+                    throw new Error(`Circuit breaker: Tool "${toolCall.getName()}" failed ${this.errorTracker.maxRetries} times consecutively. Last error: ${error.message}`);
+                }
+                
+                // AUTO-RECOVERY: Provide error details to the AI model for recovery
+                const errorDetails = `ERROR: ${error.message}\n\nThis tool execution failed (Attempt ${this.errorTracker.consecutiveErrors}/${this.errorTracker.maxRetries}). Please try a DIFFERENT approach:\n- If file not found, try using create_file tool to create it first\n- If directory doesn't exist, create the file (it will auto-create directories)\n- If missing required parameter, check the tool definition and provide ALL required parameters\n- If one approach fails, DO NOT retry the same tool with same parameters - try something else!\n- Consider using a different tool or approach to accomplish the goal\n\nIMPORTANT: Do NOT call the same tool with the same missing parameters again!`;
+                
+                // Store error details as the result so AI can read it
+                toolCall.setResult(errorDetails);
                 toolCall.error = error.message;
 
-                // Update task step on error
+                // Update task step on error - but mark as 'needs_recovery' not 'failed'
                 if (this.taskManager && this.chatId && task && step) {
                     this.taskManager.updateStep(this.chatId, task.id, step.id, {
-                        status: 'failed',
+                        status: 'needs_recovery',
                         error: error.message,
-                        content: `Failed to execute ${toolCall.getName()}. Error: ${error.message}`
+                        content: `Tool ${toolCall.getName()} encountered an error (Attempt ${this.errorTracker.consecutiveErrors}/${this.errorTracker.maxRetries}). Error: ${error.message}\nAttempting auto-recovery...`
                     });
                     this.notify('task-updated', { task, step });
                 }
 
                 this.notify('tool-error', { tool: registeredTool, error, task, step });
-                throw error;
+                console.warn(`Tool ${toolCall.getName()} failed (${this.errorTracker.consecutiveErrors}/${this.errorTracker.maxRetries}), passing error to AI for recovery:`, error.message);
             }
         }
 
@@ -658,6 +711,18 @@ class Agent {
         let usage = { inputTokens: 0, outputTokens: 0 };
 
         for await (const chunk of streamGenerator) {
+            // Handle error chunks from provider
+            if (chunk.error && chunk.toolResult) {
+                // Save tool result to history and continue stream
+                this.notify('message-saving', { message: chunk.toolResult });
+                this.resolveChatHistory().addMessage(chunk.toolResult);
+                this.notify('message-saved', { message: chunk.toolResult });
+                
+                // Continue stream to let AI see the error and respond
+                yield* this.stream([]);
+                return;
+            }
+            
             // Handle usage data
             if (chunk.usage) {
                 usage.inputTokens += chunk.usage.inputTokens || 0;
@@ -1045,7 +1110,7 @@ class DeepseekProvider {
             body.tools = tools;
             body.tool_choice = 'auto';
         }
-        
+        console.warn('Request Body:', body);
         try {
             const response = await fetch(`${this.baseURL}/chat/completions`, {
                 method: 'POST',
@@ -1086,7 +1151,16 @@ class DeepseekProvider {
             );
         } catch (error) {
             console.error('Deepseek API Error:', error);
-            throw error;
+            
+            // Return error as ToolCallResultMessage to continue to next step
+            const errorTool = new Tool('api_error', 'API Error');
+            errorTool.setCallId('error_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9));
+            const errorDetails = `ERROR: ${error.message || 'Unknown error'}\n\nAPI request failed. Please try using a different approach or tool.`;
+            errorTool.setResult(errorDetails);
+            errorTool.error = error.message || 'Unknown error';
+            
+            const toolCallResult = new ToolCallResultMessage([errorTool]);
+            return toolCallResult;
         }
     }
 
@@ -1279,7 +1353,19 @@ class DeepseekProvider {
             }
         } catch (error) {
             console.error('Deepseek Stream Error:', error);
-            throw error;
+            
+            // Yield error as a special chunk instead of throwing
+            // This allows the Agent to handle it as a tool result
+            const errorTool = new Tool('api_error', 'API Error');
+            errorTool.setCallId('error_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9));
+            const errorDetails = `ERROR: ${error.message || 'Unknown error'}\n\nAPI request failed. Please try using a different approach or tool.`;
+            errorTool.setResult(errorDetails);
+            errorTool.error = error.message || 'Unknown error';
+            
+            yield {
+                error: true,
+                toolResult: new ToolCallResultMessage([errorTool])
+            };
         }
     }
 }
@@ -1319,9 +1405,65 @@ class TaskManager {
     saveTasks(chatId, tasks) {
         try {
             const key = this.getChatKey(chatId);
+            
+            // Limit number of tasks per chat to prevent localStorage overflow
+            const MAX_TASKS_PER_CHAT = 50;
+            if (tasks.length > MAX_TASKS_PER_CHAT) {
+                // Keep only the most recent tasks
+                tasks = tasks.slice(-MAX_TASKS_PER_CHAT);
+                console.warn(`Task limit reached for chat ${chatId}. Keeping only ${MAX_TASKS_PER_CHAT} most recent tasks.`);
+            }
+            
+            // Truncate large results to prevent localStorage overflow
+            const MAX_RESULT_LENGTH = 2000; // Maximum characters for result
+            tasks.forEach(task => {
+                if (task.steps) {
+                    task.steps.forEach(step => {
+                        if (step.result && typeof step.result === 'string' && step.result.length > MAX_RESULT_LENGTH) {
+                            step.result = step.result.substring(0, MAX_RESULT_LENGTH) + `\n\n... (truncated, original length: ${step.result.length} characters)`;
+                        }
+                        if (step.content && typeof step.content === 'string' && step.content.length > MAX_RESULT_LENGTH) {
+                            step.content = step.content.substring(0, MAX_RESULT_LENGTH) + `\n\n... (truncated, original length: ${step.content.length} characters)`;
+                        }
+                    });
+                }
+                if (task.result && typeof task.result === 'string' && task.result.length > MAX_RESULT_LENGTH) {
+                    task.result = task.result.substring(0, MAX_RESULT_LENGTH) + `\n\n... (truncated, original length: ${task.result.length} characters)`;
+                }
+            });
+            
+            const dataToSave = JSON.stringify(tasks);
+            const dataSize = new Blob([dataToSave]).size;
+            const MAX_SIZE = 4 * 1024 * 1024; // 4MB limit (localStorage is usually 5-10MB)
+            
+            if (dataSize > MAX_SIZE) {
+                // If still too large, remove oldest tasks
+                console.warn(`Data size (${(dataSize / 1024 / 1024).toFixed(2)}MB) exceeds limit. Removing oldest tasks...`);
+                while (tasks.length > 0 && new Blob([JSON.stringify(tasks)]).size > MAX_SIZE) {
+                    tasks.shift(); // Remove oldest task
+                }
+            }
+            
             localStorage.setItem(key, JSON.stringify(tasks));
         } catch (e) {
-            console.error('Error saving tasks to localStorage:', e);
+            if (e.name === 'QuotaExceededError') {
+                console.error('localStorage quota exceeded. Attempting to clean up old tasks...');
+                // Try to clean up old tasks
+                this.cleanupOldTasks(chatId);
+                // Try saving again with reduced data
+                try {
+                    const reducedTasks = this.getTasks(chatId).slice(-20); // Keep only 20 most recent
+                    localStorage.setItem(this.getChatKey(chatId), JSON.stringify(reducedTasks));
+                    console.warn('Successfully saved after cleanup. Only 20 most recent tasks kept.');
+                } catch (e2) {
+                    console.error('Failed to save even after cleanup:', e2);
+                    // Last resort: clear all tasks for this chat
+                    localStorage.removeItem(this.getChatKey(chatId));
+                    console.warn('Cleared all tasks for this chat due to storage limit.');
+                }
+            } else {
+                console.error('Error saving tasks to localStorage:', e);
+            }
         }
     }
 
@@ -1384,6 +1526,9 @@ class TaskManager {
         } else if (step.status === 'failed') {
             task.status = 'failed';
             task.error = step.error;
+        } else if (step.status === 'needs_recovery') {
+            task.status = 'needs_recovery';
+            task.error = step.error;
         }
 
         this.saveTasks(chatId, tasks);
@@ -1426,6 +1571,35 @@ class TaskManager {
             }
         }
         return chats;
+    }
+
+    /**
+     * Clean up old tasks for a chat
+     */
+    cleanupOldTasks(chatId) {
+        const tasks = this.getTasks(chatId);
+        if (tasks.length > 20) {
+            // Keep only 20 most recent tasks
+            const recentTasks = tasks.slice(-20);
+            try {
+                localStorage.setItem(this.getChatKey(chatId), JSON.stringify(recentTasks));
+                console.warn(`Cleaned up tasks for chat ${chatId}. Kept ${recentTasks.length} most recent tasks.`);
+            } catch (e) {
+                console.error('Failed to save after cleanup:', e);
+            }
+        }
+    }
+
+    /**
+     * Clean up old tasks across all chats (keep only recent ones)
+     */
+    cleanupAllOldTasks() {
+        const chats = this.getAllChatsWithTasks();
+        chats.forEach(({ chatId, tasks }) => {
+            if (tasks.length > 20) {
+                this.cleanupOldTasks(chatId);
+            }
+        });
     }
 }
 

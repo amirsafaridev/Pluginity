@@ -10,6 +10,8 @@ class Plugitify_Panel {
         add_action('wp_ajax_plugitify_save_chat', array($this, 'handle_save_chat'));
         add_action('wp_ajax_plugitify_delete_chat', array($this, 'handle_delete_chat'));
         add_action('wp_ajax_plugitify_get_messages', array($this, 'handle_get_messages'));
+        add_action('wp_ajax_plugitify_save_ai_settings', array($this, 'handle_save_ai_settings'));
+        add_action('wp_ajax_plugitify_get_ai_settings', array($this, 'handle_get_ai_settings'));
         // Removed: Task management is now handled by frontend using localStorage
         // add_action('wp_ajax_plugitify_get_tasks', array($this, 'handle_get_tasks'));
         // add_action('wp_ajax_plugitify_get_task_updates', array($this, 'handle_get_task_updates'));
@@ -69,8 +71,8 @@ class Plugitify_Panel {
             return;
         }
 
-        // Get message
-        $message = isset($_POST['message']) ? sanitize_text_field($_POST['message']) : '';
+        // Get message - use sanitize_textarea_field to preserve whitespace and line breaks
+        $message = isset($_POST['message']) ? sanitize_textarea_field($_POST['message']) : '';
         $chat_id = isset($_POST['chat_id']) ? intval($_POST['chat_id']) : 0;
         $role = isset($_POST['role']) ? sanitize_text_field($_POST['role']) : 'user'; // Allow 'user' or 'assistant'
 
@@ -464,6 +466,132 @@ class Plugitify_Panel {
             wp_send_json_success(array('messages' => $messages_array));
         } catch (\Exception $e) {
             wp_send_json_error(array('message' => 'Error loading messages: ' . $e->getMessage()));
+        }
+    }
+
+    /**
+     * Handle AJAX request for saving AI settings
+     */
+    public function handle_save_ai_settings() {
+        // Verify nonce
+        $nonce = isset($_POST['nonce']) ? $_POST['nonce'] : '';
+        if (empty($nonce) || !wp_verify_nonce($nonce, 'plugitify_chat_nonce')) {
+            wp_send_json_error(array('message' => 'Invalid nonce'));
+            return;
+        }
+
+        if (!is_user_logged_in() || !current_user_can('manage_options')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+            return;
+        }
+
+        try {
+            $apiKey = isset($_POST['apiKey']) ? sanitize_text_field($_POST['apiKey']) : '';
+            $model = isset($_POST['model']) ? sanitize_text_field($_POST['model']) : 'deepseek-chat';
+
+            // Validate model
+            $allowed_models = array(
+                // OpenAI
+                'gpt-4', 'gpt-4-turbo', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo',
+                // Claude
+                'claude-3-opus-20240229', 'claude-3-sonnet-20240229', 'claude-3-haiku-20240307', 'claude-3-5-sonnet-20240620',
+                // Gemini
+                'gemini-pro', 'gemini-pro-vision', 'gemini-1.5-pro', 'gemini-1.5-flash',
+                // Deepseek
+                'deepseek-chat', 'deepseek-coder'
+            );
+
+            if (!in_array($model, $allowed_models)) {
+                wp_send_json_error(array('message' => 'Invalid model'));
+                return;
+            }
+
+            // Save settings to WordPress options (only API key and model)
+            $settings = array(
+                'apiKey' => $apiKey,
+                'model' => $model
+            );
+
+            // Save with autoload to ensure it's loaded on every page load
+            $saved = update_option('plugitify_ai_settings', $settings, true);
+            
+            // Verify the save immediately
+            $verify = get_option('plugitify_ai_settings', array());
+            
+            error_log('Plugitify: Saving AI settings - apiKey: ' . ($apiKey ? '***' : '(empty)') . ', model: ' . $model);
+            error_log('Plugitify: Settings saved: ' . ($saved ? 'true' : 'false'));
+            error_log('Plugitify: Verified settings: ' . print_r($verify, true));
+            
+            // Double check - if verification failed, try again
+            if (empty($verify) || !isset($verify['model'])) {
+                error_log('Plugitify: WARNING - Settings verification failed, retrying...');
+                delete_option('plugitify_ai_settings');
+                $saved = add_option('plugitify_ai_settings', $settings, '', 'yes');
+                $verify = get_option('plugitify_ai_settings', array());
+                error_log('Plugitify: Retry result: ' . print_r($verify, true));
+            }
+
+            wp_send_json_success(array(
+                'message' => 'Settings saved successfully',
+                'data' => $settings
+            ));
+        } catch (\Exception $e) {
+            wp_send_json_error(array('message' => 'Error saving settings: ' . $e->getMessage()));
+        }
+    }
+
+    /**
+     * Handle AJAX request for getting AI settings
+     */
+    public function handle_get_ai_settings() {
+        // Verify nonce
+        $nonce = isset($_GET['nonce']) ? $_GET['nonce'] : (isset($_POST['nonce']) ? $_POST['nonce'] : '');
+        if (empty($nonce) || !wp_verify_nonce($nonce, 'plugitify_chat_nonce')) {
+            wp_send_json_error(array('message' => 'Invalid nonce'));
+            return;
+        }
+
+        if (!is_user_logged_in() || !current_user_can('manage_options')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+            return;
+        }
+
+        try {
+            // Get settings from WordPress options
+            $settings = get_option('plugitify_ai_settings', array());
+            
+            error_log('Plugitify: Loading AI settings - Raw: ' . print_r($settings, true));
+            error_log('Plugitify: Loading AI settings - apiKey exists: ' . (isset($settings['apiKey']) ? 'yes' : 'no'));
+            error_log('Plugitify: Loading AI settings - model exists: ' . (isset($settings['model']) ? 'yes' : 'no'));
+            if (isset($settings['apiKey'])) {
+                error_log('Plugitify: Loading AI settings - apiKey length: ' . strlen($settings['apiKey']));
+            }
+            if (isset($settings['model'])) {
+                error_log('Plugitify: Loading AI settings - model: ' . $settings['model']);
+            }
+
+            // Set defaults if not set
+            if (empty($settings) || !is_array($settings)) {
+                error_log('Plugitify: Settings empty or not array, using defaults');
+                $settings = array(
+                    'apiKey' => '',
+                    'model' => 'deepseek-chat'
+                );
+            }
+            
+            // Ensure both keys exist
+            if (!isset($settings['apiKey'])) {
+                $settings['apiKey'] = '';
+            }
+            if (!isset($settings['model'])) {
+                $settings['model'] = 'deepseek-chat';
+            }
+            
+            error_log('Plugitify: Final settings to return: ' . print_r($settings, true));
+
+            wp_send_json_success(array('data' => $settings));
+        } catch (\Exception $e) {
+            wp_send_json_error(array('message' => 'Error loading settings: ' . $e->getMessage()));
         }
     }
 

@@ -69,12 +69,511 @@ class Plugitify_Admin_Menu {
      * Render main page
      */
     public function render_main_page() {
+        // Get recent activities
+        $recent_activities = $this->get_recent_activities();
+        
+        // Get chat page URL
+        $chat_url = home_url('/plugitify');
+        
         ?>
-        <div class="wrap">
-            <h1>Plugitify</h1>
-            <p>Welcome to Plugitify dashboard.</p>
+        <div class="plugitify-dashboard">
+            <div class="plugitify-dashboard__header">
+                <h1 class="plugitify-dashboard__title">Plugitify Dashboard</h1>
+                <p class="plugitify-dashboard__subtitle">Welcome to your AI-powered workspace</p>
+            </div>
+            
+            <div class="plugitify-dashboard__content">
+                <!-- Chat Section -->
+                <div class="plugitify-card plugitify-card--primary">
+                    <div class="plugitify-card__icon">
+                        <span class="dashicons dashicons-format-chat"></span>
+                    </div>
+                    <div class="plugitify-card__content">
+                        <h2 class="plugitify-card__title">AI Chat</h2>
+                        <p class="plugitify-card__description">Start a conversation with AI and leverage its powerful capabilities</p>
+                        <a href="<?php echo esc_url($chat_url); ?>" _target="_blank" class="plugitify-button plugitify-button--primary">
+                            <span class="dashicons dashicons-arrow-right-alt"></span>
+                            Go to Chat
+                        </a>
+                    </div>
+                </div>
+                
+                <!-- Recent Activities Section -->
+                <div class="plugitify-card">
+                    <div class="plugitify-card__header">
+                        <h2 class="plugitify-card__title">Recent Activities</h2>
+                        <span class="plugitify-card__count"><?php echo count($recent_activities); ?></span>
+                    </div>
+                    
+                    <?php if (empty($recent_activities)): ?>
+                        <div class="plugitify-empty-state">
+                            <span class="dashicons dashicons-update"></span>
+                            <p>No activities yet</p>
+                        </div>
+                    <?php else: ?>
+                        <div class="plugitify-activities">
+                            <?php foreach ($recent_activities as $activity): ?>
+                                <div class="plugitify-activity">
+                                    <div class="plugitify-activity__icon plugitify-activity__icon--<?php echo esc_attr(strtolower($activity['type_label'])); ?>">
+                                        <?php
+                                        $icon = 'dashicons-admin-generic';
+                                        switch (strtolower($activity['type_label'])) {
+                                            case 'migration':
+                                                $icon = 'dashicons-update';
+                                                break;
+                                            case 'chat':
+                                                $icon = 'dashicons-format-chat';
+                                                break;
+                                            case 'task':
+                                                $icon = 'dashicons-list-view';
+                                                break;
+                                        }
+                                        ?>
+                                        <span class="dashicons <?php echo esc_attr($icon); ?>"></span>
+                                    </div>
+                                    <div class="plugitify-activity__content">
+                                        <div class="plugitify-activity__header">
+                                            <span class="plugitify-activity__type"><?php echo esc_html($activity['type_label']); ?></span>
+                                            <span class="plugitify-activity__time">
+                                                <?php 
+                                                if (isset($activity['timestamp'])) {
+                                                    $timestamp = strtotime($activity['timestamp']);
+                                                    if ($timestamp) {
+                                                        $time_diff = time() - $timestamp;
+                                                        if ($time_diff < 60) {
+                                                            echo 'Just now';
+                                                        } elseif ($time_diff < 3600) {
+                                                            echo round($time_diff / 60) . ' min ago';
+                                                        } elseif ($time_diff < 86400) {
+                                                            echo round($time_diff / 3600) . ' hour' . (round($time_diff / 3600) > 1 ? 's' : '') . ' ago';
+                                                        } else {
+                                                            echo date_i18n('M j, Y', $timestamp);
+                                                        }
+                                                    } else {
+                                                        echo esc_html($activity['timestamp']);
+                                                    }
+                                                } else {
+                                                    echo '-';
+                                                }
+                                                ?>
+                                            </span>
+                                        </div>
+                                        <p class="plugitify-activity__message"><?php echo esc_html($activity['message']); ?></p>
+                                        <?php if (isset($activity['extra'])): ?>
+                                            <p class="plugitify-activity__extra"><?php echo esc_html($activity['extra']); ?></p>
+                                        <?php endif; ?>
+                                    </div>
+                                    <div class="plugitify-activity__status">
+                                        <?php
+                                        $status = isset($activity['status']) ? $activity['status'] : 'info';
+                                        $status_class = '';
+                                        $status_text = '';
+                                        switch ($status) {
+                                            case 'success':
+                                                $status_class = 'success';
+                                                $status_text = 'Success';
+                                                break;
+                                            case 'error':
+                                                $status_class = 'error';
+                                                $status_text = 'Error';
+                                                break;
+                                            case 'warning':
+                                                $status_class = 'warning';
+                                                $status_text = 'Warning';
+                                                break;
+                                            case 'completed':
+                                                $status_class = 'success';
+                                                $status_text = 'Completed';
+                                                break;
+                                            case 'in_progress':
+                                                $status_class = 'info';
+                                                $status_text = 'In Progress';
+                                                break;
+                                            case 'failed':
+                                                $status_class = 'error';
+                                                $status_text = 'Failed';
+                                                break;
+                                            default:
+                                                $status_class = 'info';
+                                                $status_text = ucfirst($status);
+                                        }
+                                        ?>
+                                        <span class="plugitify-badge plugitify-badge--<?php echo esc_attr($status_class); ?>">
+                                            <?php echo esc_html($status_text); ?>
+                                        </span>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
         </div>
+        
+        <style>
+            .plugitify-dashboard {
+                max-width: 1400px;
+                margin: 0;
+                padding: 30px 20px;
+                background: #f5f5f5;
+                min-height: calc(100vh - 32px);
+            }
+            
+            .plugitify-dashboard__header {
+                margin-bottom: 40px;
+            }
+            
+            .plugitify-dashboard__title {
+                font-size: 32px;
+                font-weight: 600;
+                color: #0b0f17;
+                margin: 0 0 8px 0;
+                letter-spacing: -0.5px;
+            }
+            
+            .plugitify-dashboard__subtitle {
+                font-size: 16px;
+                color: #9ca3af;
+                margin: 0;
+                font-weight: 400;
+            }
+            
+            .plugitify-dashboard__content {
+                display: grid;
+                grid-template-columns: 1fr 1.5fr;
+                gap: 24px;
+                align-items: start;
+            }
+            
+            .plugitify-card {
+                background: #ffffff;
+                border-radius: 12px;
+                box-shadow: 0 2px 8px rgba(11, 15, 23, 0.08);
+                padding: 24px;
+                transition: all 0.3s ease;
+            }
+            
+            .plugitify-card:hover {
+                box-shadow: 0 4px 16px rgba(11, 15, 23, 0.12);
+            }
+            
+            .plugitify-card--primary {
+                background: linear-gradient(135deg, #48aecb 0%, #3d9bb8 100%);
+                color: #ffffff;
+            }
+            
+            .plugitify-card__icon {
+                width: 56px;
+                height: 56px;
+                background: rgba(255, 255, 255, 0.2);
+                border-radius: 12px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin-bottom: 20px;
+            }
+            
+            .plugitify-card--primary .plugitify-card__icon .dashicons {
+                font-size: 28px;
+                width: 28px;
+                height: 28px;
+                color: #ffffff;
+            }
+            
+            .plugitify-card__title {
+                font-size: 20px;
+                font-weight: 600;
+                color: #0b0f17;
+                margin: 0 0 8px 0;
+                letter-spacing: -0.3px;
+            }
+            
+            .plugitify-card--primary .plugitify-card__title {
+                color: #ffffff;
+            }
+            
+            .plugitify-card__description {
+                font-size: 14px;
+                color: #9ca3af;
+                margin: 0 0 20px 0;
+                line-height: 1.6;
+            }
+            
+            .plugitify-card--primary .plugitify-card__description {
+                color: rgba(255, 255, 255, 0.9);
+            }
+            
+            .plugitify-card__header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 20px;
+            }
+            
+            .plugitify-card__count {
+                background: #f0f0f0;
+                color: #0b0f17;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 4px 12px;
+                border-radius: 12px;
+            }
+            
+            .plugitify-button {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                padding: 12px 24px;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 600;
+                text-decoration: none;
+                transition: all 0.2s ease;
+                border: none;
+                cursor: pointer;
+            }
+            
+            .plugitify-button--primary {
+                background: #ffffff;
+                color: #48aecb;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            }
+            
+            .plugitify-button--primary:hover {
+                background: #f5f5f5;
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                color: #3d9bb8;
+            }
+            
+            .plugitify-button .dashicons {
+                font-size: 16px;
+                width: 16px;
+                height: 16px;
+            }
+            
+            .plugitify-empty-state {
+                text-align: center;
+                padding: 60px 20px;
+                color: #9ca3af;
+            }
+            
+            .plugitify-empty-state .dashicons {
+                font-size: 48px;
+                width: 48px;
+                height: 48px;
+                margin-bottom: 16px;
+                opacity: 0.5;
+            }
+            
+            .plugitify-empty-state p {
+                margin: 0;
+                font-size: 14px;
+            }
+            
+            .plugitify-activities {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+            
+            .plugitify-activity {
+                display: flex;
+                align-items: flex-start;
+                gap: 16px;
+                padding: 16px;
+                background: #fafafa;
+                border-radius: 8px;
+                transition: all 0.2s ease;
+            }
+            
+            .plugitify-activity:hover {
+                background: #f5f5f5;
+            }
+            
+            .plugitify-activity__icon {
+                width: 40px;
+                height: 40px;
+                border-radius: 8px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex-shrink: 0;
+            }
+            
+            .plugitify-activity__icon--migration {
+                background: rgba(72, 174, 203, 0.1);
+                color: #48aecb;
+            }
+            
+            .plugitify-activity__icon--chat {
+                background: rgba(72, 174, 203, 0.1);
+                color: #48aecb;
+            }
+            
+            .plugitify-activity__icon--task {
+                background: rgba(72, 174, 203, 0.1);
+                color: #48aecb;
+            }
+            
+            .plugitify-activity__icon .dashicons {
+                font-size: 20px;
+                width: 20px;
+                height: 20px;
+            }
+            
+            .plugitify-activity__content {
+                flex: 1;
+                min-width: 0;
+            }
+            
+            .plugitify-activity__header {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 4px;
+            }
+            
+            .plugitify-activity__type {
+                font-size: 12px;
+                font-weight: 600;
+                color: #48aecb;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            
+            .plugitify-activity__time {
+                font-size: 12px;
+                color: #9ca3af;
+            }
+            
+            .plugitify-activity__message {
+                font-size: 14px;
+                color: #0b0f17;
+                margin: 0 0 4px 0;
+                line-height: 1.5;
+            }
+            
+            .plugitify-activity__extra {
+                font-size: 12px;
+                color: #9ca3af;
+                margin: 0;
+            }
+            
+            .plugitify-activity__status {
+                flex-shrink: 0;
+            }
+            
+            .plugitify-badge {
+                display: inline-block;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.3px;
+            }
+            
+            .plugitify-badge--success {
+                background: rgba(72, 174, 203, 0.1);
+                color: #48aecb;
+            }
+            
+            .plugitify-badge--error {
+                background: rgba(239, 68, 68, 0.1);
+                color: #ef4444;
+            }
+            
+            .plugitify-badge--warning {
+                background: rgba(245, 158, 11, 0.1);
+                color: #f59e0b;
+            }
+            
+            .plugitify-badge--info {
+                background: rgba(72, 174, 203, 0.1);
+                color: #48aecb;
+            }
+            
+            @media (max-width: 1200px) {
+                .plugitify-dashboard__content {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
         <?php
+    }
+    
+    /**
+     * Get recent activities from migrations, chat logs, and tasks
+     */
+    private function get_recent_activities($limit = 10) {
+        $activities = array();
+        
+        // Get migration logs
+        if (class_exists('Plugitify_Migrate')) {
+            $migration_logs = Plugitify_Migrate::getLogs(5);
+            foreach ($migration_logs as $log) {
+                $activities[] = array(
+                    'timestamp' => isset($log['timestamp']) ? $log['timestamp'] : current_time('mysql'),
+                    'type_label' => 'Migration',
+                    'status' => isset($log['status']) ? $log['status'] : 'info',
+                    'message' => isset($log['message']) ? $log['message'] : 'Migration activity',
+                    'extra' => isset($log['file']) ? 'File: ' . $log['file'] : null
+                );
+            }
+        }
+        
+        // Get chat logs
+        if (class_exists('Plugitify_Chat_Logs')) {
+            $chat_logs = Plugitify_Chat_Logs::getLogs(5);
+            foreach ($chat_logs as $log) {
+                $activities[] = array(
+                    'timestamp' => isset($log['timestamp']) ? $log['timestamp'] : current_time('mysql'),
+                    'type_label' => 'Chat',
+                    'status' => isset($log['status']) ? $log['status'] : 'info',
+                    'message' => isset($log['message']) ? $log['message'] : 'Chat activity',
+                    'extra' => isset($log['chat_id']) ? 'Chat ID: ' . $log['chat_id'] : null
+                );
+            }
+        }
+        
+        // Get recent tasks
+        if (class_exists('Plugitify_DB') && Plugitify_DB::tableExists('tasks')) {
+            $tasks = Plugitify_DB::table('tasks')
+                ->orderBy('created_at', 'DESC')
+                ->limit(5)
+                ->get();
+            
+            if ($tasks) {
+                if (!is_array($tasks)) {
+                    $tasks = array($tasks);
+                }
+                
+                foreach ($tasks as $task) {
+                    $task_name = is_object($task) ? $task->task_name : $task['task_name'];
+                    $task_status = is_object($task) ? $task->status : $task['status'];
+                    $created_at = is_object($task) ? $task->created_at : $task['created_at'];
+                    
+                    $activities[] = array(
+                        'timestamp' => $created_at ? $created_at : current_time('mysql'),
+                        'type_label' => 'Task',
+                        'status' => $task_status,
+                        'message' => $task_name ? $task_name : 'Task activity',
+                        'extra' => null
+                    );
+                }
+            }
+        }
+        
+        // Sort by timestamp (most recent first)
+        usort($activities, function($a, $b) {
+            $time_a = isset($a['timestamp']) ? strtotime($a['timestamp']) : 0;
+            $time_b = isset($b['timestamp']) ? strtotime($b['timestamp']) : 0;
+            return $time_b - $time_a;
+        });
+        
+        // Limit results
+        return array_slice($activities, 0, $limit);
     }
     
     /**

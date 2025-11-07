@@ -8,7 +8,7 @@ class Plugitify_Main {
     }
 
     public function include_files() {
-        include_once PLUGITIFY_DIR . 'vendor/autoload.php';
+        //include_once PLUGITIFY_DIR . 'vendor/autoload.php';
         $includes = [
             'migrations/migrate.php',
             'include/class/Plugitify_DB.php',
