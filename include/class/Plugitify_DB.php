@@ -171,23 +171,23 @@ class Plugitify_DB {
                     switch ($where['type']) {
                         case 'in':
                             $placeholders = implode(',', array_fill(0, count($where['values']), '%s'));
-                            $conditions[] = $boolean . $where['column'] . ' IN (' . $placeholders . ')';
+                            $conditions[] = $boolean . esc_sql($where['column']) . ' IN (' . $placeholders . ')';
                             $where_values = array_merge($where_values, $where['values']);
                             break;
                         case 'not_in':
                             $placeholders = implode(',', array_fill(0, count($where['values']), '%s'));
-                            $conditions[] = $boolean . $where['column'] . ' NOT IN (' . $placeholders . ')';
+                            $conditions[] = $boolean . esc_sql($where['column']) . ' NOT IN (' . $placeholders . ')';
                             $where_values = array_merge($where_values, $where['values']);
                             break;
                         case 'null':
-                            $conditions[] = $boolean . $where['column'] . ' IS NULL';
+                            $conditions[] = $boolean . esc_sql($where['column']) . ' IS NULL';
                             break;
                         case 'not_null':
-                            $conditions[] = $boolean . $where['column'] . ' IS NOT NULL';
+                            $conditions[] = $boolean . esc_sql($where['column']) . ' IS NOT NULL';
                             break;
                     }
                 } else {
-                    $conditions[] = $boolean . $where['column'] . ' ' . $where['operator'] . ' %s';
+                    $conditions[] = $boolean . esc_sql($where['column']) . ' ' . esc_sql($where['operator']) . ' %s';
                     $where_values[] = $where['value'];
                 }
             }
@@ -202,13 +202,16 @@ class Plugitify_DB {
      */
     public function get() {
         $where_data = $this->buildWhere();
-        $query = "SELECT {$this->select} FROM {$this->table_name}";
+        $table_name_safe = esc_sql($this->table_name);
+        // Select is safe - it comes from internal code (select() method), not user input
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Select columns are from internal code
+        $query = "SELECT {$this->select} FROM {$table_name_safe}";
         $query .= $where_data['clause'];
         
         if (!empty($this->orderBy)) {
             $order_parts = [];
             foreach ($this->orderBy as $order) {
-                $order_parts[] = $order['column'] . ' ' . $order['direction'];
+                $order_parts[] = esc_sql($order['column']) . ' ' . esc_sql($order['direction']);
             }
             $query .= ' ORDER BY ' . implode(', ', $order_parts);
         }
@@ -221,10 +224,12 @@ class Plugitify_DB {
         }
         
         if (!empty($where_data['values'])) {
-            $query = $this->wpdb->prepare($query, $where_data['values']);
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Query is prepared above
+            $results = $this->wpdb->get_results($this->wpdb->prepare($query, $where_data['values']));
+        } else {
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- No user input in query, table/columns are escaped
+            $results = $this->wpdb->get_results($query);
         }
-        
-        $results = $this->wpdb->get_results($query);
         $this->resetQuery();
         
         // Return empty array if no results or error occurred
@@ -256,14 +261,17 @@ class Plugitify_DB {
      */
     public function count() {
         $where_data = $this->buildWhere();
-        $query = "SELECT COUNT(*) FROM {$this->table_name}";
+        $table_name_safe = esc_sql($this->table_name);
+        $query = "SELECT COUNT(*) FROM {$table_name_safe}";
         $query .= $where_data['clause'];
         
         if (!empty($where_data['values'])) {
-            $query = $this->wpdb->prepare($query, $where_data['values']);
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Query is prepared above
+            $count = $this->wpdb->get_var($this->wpdb->prepare($query, $where_data['values']));
+        } else {
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- No user input in query, table is escaped
+            $count = $this->wpdb->get_var($query);
         }
-        
-        $count = $this->wpdb->get_var($query);
         $this->resetQuery();
         return (int) $count;
     }
@@ -311,9 +319,12 @@ class Plugitify_DB {
             $placeholders[] = '(' . implode(',', $row_values) . ')';
         }
         
-        $columns_str = implode(',', array_map(function($col) { return "`{$col}`"; }, $columns));
-        $query = "INSERT INTO {$this->table_name} ({$columns_str}) VALUES " . implode(',', $placeholders);
+        $columns_str = implode(',', array_map(function($col) { return "`" . esc_sql($col) . "`"; }, $columns));
+        $table_name_safe = esc_sql($this->table_name);
+        // Note: Values are already prepared in the loop above using wpdb->prepare('%s', ...)
+        $query = "INSERT INTO {$table_name_safe} ({$columns_str}) VALUES " . implode(',', $placeholders);
         
+        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Values are already prepared above
         $result = $this->wpdb->query($query);
         $this->resetQuery();
         return $result !== false;
@@ -393,14 +404,17 @@ class Plugitify_DB {
             return false; // Prevent deleting all rows without where clause
         }
         
-        $query = "DELETE FROM {$this->table_name}";
+        $table_name_safe = esc_sql($this->table_name);
+        $query = "DELETE FROM {$table_name_safe}";
         $query .= $where_data['clause'];
         
         if (!empty($where_data['values'])) {
-            $query = $this->wpdb->prepare($query, $where_data['values']);
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Query is prepared above
+            $result = $this->wpdb->query($this->wpdb->prepare($query, $where_data['values']));
+        } else {
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- No user input in query, table is escaped
+            $result = $this->wpdb->query($query);
         }
-        
-        $result = $this->wpdb->query($query);
         $this->resetQuery();
         return $result !== false;
     }
@@ -467,6 +481,7 @@ class Plugitify_DB {
         $sql .= "\n) {$charset_collate};";
         
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- dbDelta is WordPress core function for table creation
         $result = dbDelta($sql);
         
         // Verify table was created

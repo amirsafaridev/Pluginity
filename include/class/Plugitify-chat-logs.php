@@ -47,7 +47,7 @@ class Plugitify_Chat_Logs {
         
         // ذخیره در option (فقط یک query)
         update_option($option_name, $logs);
-        error_log('Plugitify: chat logs ' . print_r($log_data, true));
+        // Debug: error_log('Plugitify: chat logs ' . print_r($log_data, true));
     }
     
     /**

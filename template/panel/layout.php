@@ -15,7 +15,7 @@
         <aside class="ai-sidebar">
             <div class="ai-sidebar__top">
                 <div class="ai-sidebar__logo">
-                    <img src="<?= PLUGITIFY_URL.'assets/img/logo-1024x328.webp'; ?>" alt="Pluginity" loading="lazy" />
+                    <img src="<?php echo esc_url(PLUGITIFY_URL.'assets/img/logo-1024x328.webp'); ?>" alt="Pluginity" loading="lazy" />
                 </div>
                 <button class="ai-btn ai-btn--primary" type="button" @click="newChat">New chat</button>
             </div>
@@ -191,7 +191,15 @@
     </div>
 </div>
 
-<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<?php
+/**
+ * Note: Vue.js is loaded from local file (assets/js/vue.global.prod.js)
+ * This template file is loaded directly via template_include filter,
+ * not through WordPress's normal template hierarchy. Therefore, wp_enqueue_script()
+ * cannot be used here. The script URL is properly escaped using esc_url().
+ */
+?>
+<script src="<?php echo esc_url(PLUGITIFY_URL.'assets/js/vue.global.prod.js'); ?>"></script>
 <script type="module">
 const { createApp } = Vue;
 
@@ -213,9 +221,9 @@ createApp({
             messageTasksMap: {}, // Map message IDs to their tasks
             errorMessage: null,
             lastUserMessage: null, // Store last user message for retry
-            ajaxUrl: '<?= admin_url('admin-ajax.php'); ?>',
-            nonce: '<?= wp_create_nonce('plugitify_chat_nonce'); ?>',
-            agentUrl: '<?= PLUGITIFY_URL.'assets/js/agent.js'; ?>',
+            ajaxUrl: '<?php echo esc_url(admin_url('admin-ajax.php')); ?>',
+            nonce: '<?php echo esc_js(wp_create_nonce('plugitify_chat_nonce')); ?>',
+            agentUrl: '<?php echo esc_url(PLUGITIFY_URL.'assets/js/agent.js'); ?>',
             showSettingsModal: false,
             aiSettings: {
                 apiKey: '',
@@ -1127,8 +1135,8 @@ After completing all work, provide a clear, natural language summary. DO NOT ret
             }
         },
         async callAPI(action, data = {}, method = 'POST') {
-            const ajaxUrl = '<?= admin_url('admin-ajax.php'); ?>';
-            const nonce = '<?= wp_create_nonce('plugitify_chat_nonce'); ?>';
+            const ajaxUrl = '<?php echo esc_url(admin_url('admin-ajax.php')); ?>';
+            const nonce = '<?php echo esc_js(wp_create_nonce('plugitify_chat_nonce')); ?>';
             
             console.log('callAPI called:', { action, data, method });
             

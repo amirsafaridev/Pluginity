@@ -122,8 +122,10 @@ class Plugitify_Tools_API {
             // Create a new step for this tool call
             global $wpdb;
             $steps_table = \Plugitify_DB::getFullTableName('steps');
+            $steps_table_safe = esc_sql($steps_table);
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Table name is escaped with esc_sql(), direct query needed for custom table
             $maxOrder = $wpdb->get_var($wpdb->prepare(
-                "SELECT MAX(`order`) FROM {$steps_table} WHERE task_id = %d",
+                "SELECT MAX(`order`) FROM {$steps_table_safe} WHERE task_id = %d",
                 $taskId
             ));
             $order = ($maxOrder !== null && $maxOrder !== false) ? intval($maxOrder) + 1 : 1;
@@ -147,7 +149,7 @@ class Plugitify_Tools_API {
                 'step_id' => $stepId
             ];
         } catch (\Exception $e) {
-            error_log('Plugitify: Failed to auto manage task/step: ' . $e->getMessage());
+            // Debug: error_log('Plugitify: Failed to auto manage task/step: ' . $e->getMessage());
             return null;
         }
     }
@@ -275,7 +277,8 @@ class Plugitify_Tools_API {
      */
     private function validateRequest(): array {
         // Verify nonce
-        $nonce = isset($_POST['nonce']) ? $_POST['nonce'] : '';
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+        $nonce = isset($_POST['nonce']) ? wp_unslash($_POST['nonce']) : '';
         if (empty($nonce) || !wp_verify_nonce($nonce, 'plugitify_chat_nonce')) {
             wp_send_json_error(array('message' => 'Invalid nonce'));
             exit;
@@ -344,8 +347,8 @@ class Plugitify_Tools_API {
      * Handle create_directory tool
      */
     public function handle_create_directory() {
-        $context = $this->validateRequest();
-        $path = isset($_POST['path']) ? sanitize_text_field($_POST['path']) : '';
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        $path = isset($_POST['path']) ? sanitize_text_field(wp_unslash($_POST['path'])) : '';
         
         if (empty($path)) {
             wp_send_json_error(array('message' => 'Path is required'));
@@ -387,12 +390,15 @@ class Plugitify_Tools_API {
      * Handle create_file tool
      */
     public function handle_create_file() {
-        $context = $this->validateRequest();
-        $file_path = isset($_POST['file_path']) ? sanitize_text_field($_POST['file_path']) : '';
-        $content = isset($_POST['content']) ? $_POST['content'] : '';
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $content = isset($_POST['content']) ? wp_unslash($_POST['content']) : '';
         
         // Decode base64 content if it was encoded
-        if (isset($_POST['content_encoded']) && $_POST['content_encoded'] === '1') {
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        if (isset($_POST['content_encoded']) && wp_unslash($_POST['content_encoded']) === '1') {
             // Decode base64 (UTF-8 safe - JavaScript used btoa(unescape(encodeURIComponent(...))))
             $decoded = base64_decode($content, true);
             if ($decoded === false) {
@@ -458,8 +464,9 @@ class Plugitify_Tools_API {
      * Handle delete_file tool
      */
     public function handle_delete_file() {
-        $context = $this->validateRequest();
-        $file_path = isset($_POST['file_path']) ? sanitize_text_field($_POST['file_path']) : '';
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
         
         if (empty($file_path)) {
             wp_send_json_error(array('message' => 'File path is required'));
@@ -507,8 +514,9 @@ class Plugitify_Tools_API {
      * Handle delete_directory tool
      */
     public function handle_delete_directory() {
-        $context = $this->validateRequest();
-        $path = isset($_POST['path']) ? sanitize_text_field($_POST['path']) : '';
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $path = isset($_POST['path']) ? sanitize_text_field(wp_unslash($_POST['path'])) : '';
         
         if (empty($path)) {
             wp_send_json_error(array('message' => 'Path is required'));
@@ -570,8 +578,9 @@ class Plugitify_Tools_API {
      * Handle read_file tool
      */
     public function handle_read_file() {
-        $context = $this->validateRequest();
-        $file_path = isset($_POST['file_path']) ? sanitize_text_field($_POST['file_path']) : '';
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
         
         if (empty($file_path)) {
             wp_send_json_error(array('message' => 'File path is required'));
@@ -625,14 +634,19 @@ class Plugitify_Tools_API {
      * Handle edit_file_line tool
      */
     public function handle_edit_file_line() {
-        $context = $this->validateRequest();
-        $file_path = isset($_POST['file_path']) ? sanitize_text_field($_POST['file_path']) : '';
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $line_number = isset($_POST['line_number']) ? intval($_POST['line_number']) : 0;
-        $new_content = isset($_POST['new_content']) ? $_POST['new_content'] : '';
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $new_content = isset($_POST['new_content']) ? wp_unslash($_POST['new_content']) : '';
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $line_count = isset($_POST['line_count']) ? intval($_POST['line_count']) : 1;
         
         // Decode base64 content if it was encoded
-        if (isset($_POST['new_content_encoded']) && $_POST['new_content_encoded'] === '1') {
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        if (isset($_POST['new_content_encoded']) && wp_unslash($_POST['new_content_encoded']) === '1') {
             // Decode base64 (UTF-8 safe - JavaScript used btoa(unescape(encodeURIComponent(...))))
             $decoded = base64_decode($new_content, true);
             if ($decoded === false) {
@@ -766,8 +780,9 @@ class Plugitify_Tools_API {
      * Handle list_plugins tool
      */
     public function handle_list_plugins() {
-        $context = $this->validateRequest();
-        $status = isset($_POST['status']) ? sanitize_text_field($_POST['status']) : null;
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $status = isset($_POST['status']) ? sanitize_text_field(wp_unslash($_POST['status'])) : null;
 
         // Auto manage task/step
         $this->autoManageTaskStep('list_plugins', ['status' => $status ?? 'all']);
@@ -833,8 +848,9 @@ class Plugitify_Tools_API {
      * Handle deactivate_plugin tool
      */
     public function handle_deactivate_plugin() {
-        $context = $this->validateRequest();
-        $plugin_file = isset($_POST['plugin_file']) ? sanitize_text_field($_POST['plugin_file']) : '';
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $plugin_file = isset($_POST['plugin_file']) ? sanitize_text_field(wp_unslash($_POST['plugin_file'])) : '';
         
         if (empty($plugin_file)) {
             wp_send_json_error(array('message' => 'Plugin file is required'));
@@ -905,8 +921,9 @@ class Plugitify_Tools_API {
      * Handle extract_plugin_structure tool
      */
     public function handle_extract_plugin_structure() {
-        $context = $this->validateRequest();
-        $plugin_name = isset($_POST['plugin_name']) ? sanitize_text_field($_POST['plugin_name']) : '';
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $plugin_name = isset($_POST['plugin_name']) ? sanitize_text_field(wp_unslash($_POST['plugin_name'])) : '';
         
         if (empty($plugin_name)) {
             wp_send_json_error(array('message' => 'Plugin name is required'));
@@ -1076,8 +1093,9 @@ class Plugitify_Tools_API {
      * Handle toggle_wp_debug tool
      */
     public function handle_toggle_wp_debug() {
-        $context = $this->validateRequest();
-        $enable = isset($_POST['enable']) ? filter_var($_POST['enable'], FILTER_VALIDATE_BOOLEAN) : null;
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $enable = isset($_POST['enable']) ? filter_var(wp_unslash($_POST['enable']), FILTER_VALIDATE_BOOLEAN) : null;
         
         if ($enable === null) {
             wp_send_json_error(array('message' => 'Enable parameter is required (true or false)'));
@@ -1186,7 +1204,8 @@ class Plugitify_Tools_API {
      * Handle read_debug_log tool
      */
     public function handle_read_debug_log() {
-        $context = $this->validateRequest();
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $lines = isset($_POST['lines']) ? intval($_POST['lines']) : 100; // Default last 100 lines
         
         // Auto manage task/step
@@ -1242,7 +1261,7 @@ class Plugitify_Tools_API {
      * Handle check_wp_debug_status tool
      */
     public function handle_check_wp_debug_status() {
-        $context = $this->validateRequest();
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
         
         // Auto manage task/step
         $this->autoManageTaskStep('check_wp_debug_status', []);
@@ -1327,9 +1346,11 @@ class Plugitify_Tools_API {
      * Handle search_replace_in_file tool
      */
     public function handle_search_replace_in_file() {
-        $context = $this->validateRequest();
-        $file_path = isset($_POST['file_path']) ? sanitize_text_field($_POST['file_path']) : '';
-        $replacements = isset($_POST['replacements']) ? $_POST['replacements'] : '';
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $replacements = isset($_POST['replacements']) ? wp_unslash($_POST['replacements']) : '';
         
         // Decode replacements if it was JSON encoded
         if (is_string($replacements)) {
@@ -1485,8 +1506,10 @@ class Plugitify_Tools_API {
      * Handle update_chat_title tool
      */
     public function handle_update_chat_title() {
-        $context = $this->validateRequest();
-        $title = isset($_POST['title']) ? sanitize_text_field($_POST['title']) : '';
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $title = isset($_POST['title']) ? sanitize_text_field(wp_unslash($_POST['title'])) : '';
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $chat_id = isset($_POST['chat_id']) ? intval($_POST['chat_id']) : 0;
         
         if (empty($title)) {

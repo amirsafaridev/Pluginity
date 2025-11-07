@@ -1,7 +1,7 @@
 <aside class="ai-sidebar">
     <div class="ai-sidebar__top">
         <div class="ai-sidebar__logo">
-            <img src="<?= PLUGITIFY_URL.'assets/img/logo-1024x328.webp'; ?>" alt="Pluginity" loading="lazy" />
+            <img src="<?php echo esc_url(PLUGITIFY_URL.'assets/img/logo-1024x328.webp'); ?>" alt="Pluginity" loading="lazy" />
         </div>
         <button class="ai-btn ai-btn--primary" type="button">New chat</button>
     </div>

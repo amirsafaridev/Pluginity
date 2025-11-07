@@ -47,7 +47,7 @@ class Plugitify_Admin_Menu {
         }
         
         // Get current tab
-        $this->current_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'migrations';
+        $this->current_tab = isset($_GET['tab']) ? sanitize_text_field(wp_unslash($_GET['tab'])) : 'migrations';
         
         // Handle clear logs action
         if (isset($_POST['clear_logs']) && check_admin_referer('plugitify_clear_logs')) {
@@ -141,13 +141,13 @@ class Plugitify_Admin_Menu {
                                                     if ($timestamp) {
                                                         $time_diff = time() - $timestamp;
                                                         if ($time_diff < 60) {
-                                                            echo 'Just now';
+                                                            echo esc_html('Just now');
                                                         } elseif ($time_diff < 3600) {
-                                                            echo round($time_diff / 60) . ' min ago';
+                                                            echo esc_html(round($time_diff / 60) . ' min ago');
                                                         } elseif ($time_diff < 86400) {
-                                                            echo round($time_diff / 3600) . ' hour' . (round($time_diff / 3600) > 1 ? 's' : '') . ' ago';
+                                                            echo esc_html(round($time_diff / 3600) . ' hour' . (round($time_diff / 3600) > 1 ? 's' : '') . ' ago');
                                                         } else {
-                                                            echo date_i18n('M j, Y', $timestamp);
+                                                            echo esc_html(date_i18n('M j, Y', $timestamp));
                                                         }
                                                     } else {
                                                         echo esc_html($activity['timestamp']);
@@ -580,8 +580,9 @@ class Plugitify_Admin_Menu {
      * Render logs page with tabs
      */
     public function render_logs_page() {
-        // Get current tab
-        $this->current_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'migrations';
+        // Get current tab (GET parameter for tab switching - no sensitive data)
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Tab switching doesn't require nonce
+        $this->current_tab = isset($_GET['tab']) ? sanitize_text_field(wp_unslash($_GET['tab'])) : 'migrations';
         
         // Define available tabs
         $tabs = array(
@@ -718,7 +719,7 @@ class Plugitify_Admin_Menu {
                                     <?php 
                                     if (isset($log['timestamp'])) {
                                         $timestamp = strtotime($log['timestamp']);
-                                        echo $timestamp ? date_i18n('Y/m/d H:i:s', $timestamp) : $log['timestamp'];
+                                        echo $timestamp ? esc_html(date_i18n('Y/m/d H:i:s', $timestamp)) : esc_html($log['timestamp']);
                                     } else {
                                         echo '-';
                                     }
@@ -750,7 +751,7 @@ class Plugitify_Admin_Menu {
                                             $status_text = ucfirst($log['status']);
                                     }
                                     ?>
-                                    <span class="status-badge status-<?php echo $status_class; ?>">
+                                    <span class="status-badge status-<?php echo esc_attr($status_class); ?>">
                                         <?php echo esc_html($status_text); ?>
                                     </span>
                                 </td>
@@ -833,7 +834,7 @@ class Plugitify_Admin_Menu {
                                     <?php 
                                     if (isset($log['timestamp'])) {
                                         $timestamp = strtotime($log['timestamp']);
-                                        echo $timestamp ? date_i18n('Y/m/d H:i:s', $timestamp) : esc_html($log['timestamp']);
+                                        echo $timestamp ? esc_html(date_i18n('Y/m/d H:i:s', $timestamp)) : esc_html($log['timestamp']);
                                     } else {
                                         echo '-';
                                     }
@@ -903,7 +904,7 @@ class Plugitify_Admin_Menu {
                                             }
                                             $meta_parts[] = esc_html($key . ': ' . $value);
                                         }
-                                        echo implode('<br>', $meta_parts);
+                                        echo wp_kses_post(implode('<br>', $meta_parts));
                                     } else {
                                         echo '-';
                                     }
@@ -958,11 +959,12 @@ class Plugitify_Admin_Menu {
             $task_id = is_object($task) ? $task->id : $task['id'];
             
             // Get steps for this task
-            $steps_query = $wpdb->prepare(
-                "SELECT * FROM {$steps_table} WHERE task_id = %d ORDER BY `order` ASC, created_at ASC",
+            $steps_table_safe = esc_sql($steps_table);
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Table name is escaped with esc_sql(), direct query needed for custom table
+            $steps = $wpdb->get_results($wpdb->prepare(
+                "SELECT * FROM {$steps_table_safe} WHERE task_id = %d ORDER BY `order` ASC, created_at ASC",
                 $task_id
-            );
-            $steps = $wpdb->get_results($steps_query);
+            ));
             
             // Ensure steps is an array
             if (is_object($steps)) {
@@ -1087,7 +1089,7 @@ class Plugitify_Admin_Menu {
                                     <?php endif; ?>
                                 </td>
                                 <td>
-                                    <?php echo $created_timestamp ? date_i18n('Y/m/d H:i', $created_timestamp) : '-'; ?>
+                                    <?php echo $created_timestamp ? esc_html(date_i18n('Y/m/d H:i', $created_timestamp)) : '-'; ?>
                                 </td>
                                 <td>
                                     <button type="button" class="button button-small toggle-steps" data-task-id="<?php echo esc_attr($task_id); ?>">
@@ -1187,7 +1189,7 @@ class Plugitify_Admin_Menu {
                                                                 <?php endif; ?>
                                                             </td>
                                                             <td>
-                                                                <?php echo $step_created_timestamp ? date_i18n('Y/m/d H:i', $step_created_timestamp) : '-'; ?>
+                                                                <?php echo $step_created_timestamp ? esc_html(date_i18n('Y/m/d H:i', $step_created_timestamp)) : '-'; ?>
                                                             </td>
                                                             <td>
                                                                 <?php echo $step_duration ? esc_html($step_duration) . 's' : '-'; ?>

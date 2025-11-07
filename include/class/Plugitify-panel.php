@@ -18,8 +18,12 @@ class Plugitify_Panel {
     }
 
     public function prevent_404($preempt, $wp_query) {
-        $request_uri = trim($_SERVER['REQUEST_URI'], '/');
-        $home_path = trim(parse_url(home_url(), PHP_URL_PATH), '/');
+        if (!isset($_SERVER['REQUEST_URI'])) {
+            return $preempt;
+        }
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- REQUEST_URI is used for routing only, not output
+        $request_uri = trim(wp_unslash($_SERVER['REQUEST_URI']), '/');
+        $home_path = trim(wp_parse_url(home_url(), PHP_URL_PATH), '/');
         
         if ($home_path) {
             $request_uri = str_replace($home_path, '', $request_uri);
@@ -34,8 +38,12 @@ class Plugitify_Panel {
     }
 
     public function template_include($template) {
-        $request_uri = trim($_SERVER['REQUEST_URI'], '/');
-        $home_path = trim(parse_url(home_url(), PHP_URL_PATH), '/');
+        if (!isset($_SERVER['REQUEST_URI'])) {
+            return $template;
+        }
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- REQUEST_URI is used for routing only, not output
+        $request_uri = trim(wp_unslash($_SERVER['REQUEST_URI']), '/');
+        $home_path = trim(wp_parse_url(home_url(), PHP_URL_PATH), '/');
         
         if ($home_path) {
             $request_uri = str_replace($home_path, '', $request_uri);
@@ -60,7 +68,8 @@ class Plugitify_Panel {
      */
     public function handle_send_message() {
         // Verify nonce
-        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'plugitify_chat_nonce')) {
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+        if (!isset($_POST['nonce']) || !wp_verify_nonce(wp_unslash($_POST['nonce']), 'plugitify_chat_nonce')) {
             wp_send_json_error(array('message' => 'Invalid nonce'));
             return;
         }
@@ -72,9 +81,9 @@ class Plugitify_Panel {
         }
 
         // Get message - use sanitize_textarea_field to preserve whitespace and line breaks
-        $message = isset($_POST['message']) ? sanitize_textarea_field($_POST['message']) : '';
+        $message = isset($_POST['message']) ? sanitize_textarea_field(wp_unslash($_POST['message'])) : '';
         $chat_id = isset($_POST['chat_id']) ? intval($_POST['chat_id']) : 0;
-        $role = isset($_POST['role']) ? sanitize_text_field($_POST['role']) : 'user'; // Allow 'user' or 'assistant'
+        $role = isset($_POST['role']) ? sanitize_text_field(wp_unslash($_POST['role'])) : 'user'; // Allow 'user' or 'assistant'
 
         if (empty($message)) {
             wp_send_json_error(array('message' => 'Message is required'));
@@ -134,7 +143,7 @@ class Plugitify_Panel {
                 }
             } catch (\Exception $log_error) {
                 // If logging fails, don't break the flow
-                error_log('Failed to log chat error: ' . $log_error->getMessage());
+                // Debug: error_log('Failed to log chat error: ' . $log_error->getMessage());
             }
             
             wp_send_json_error(array(
@@ -150,7 +159,14 @@ class Plugitify_Panel {
      */
     public function handle_get_chats() {
         // Verify nonce
-        $nonce = isset($_GET['nonce']) ? $_GET['nonce'] : (isset($_POST['nonce']) ? $_POST['nonce'] : '');
+        $nonce = '';
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+        if (isset($_GET['nonce'])) {
+            $nonce = wp_unslash($_GET['nonce']);
+        } elseif (isset($_POST['nonce'])) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+            $nonce = wp_unslash($_POST['nonce']);
+        }
         if (empty($nonce) || !wp_verify_nonce($nonce, 'plugitify_chat_nonce')) {
             wp_send_json_error(array('message' => 'Invalid nonce'));
             return;
@@ -200,11 +216,11 @@ class Plugitify_Panel {
             wp_send_json_success(array('chats' => $chats_array));
         } catch (\Exception $e) {
             // Log error for debugging
-            error_log('Plugitify get_chats error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
+            // Debug: error_log('Plugitify get_chats error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
             wp_send_json_error(array('message' => 'Error loading chats: ' . $e->getMessage()));
         } catch (\Error $e) {
             // Catch fatal errors too
-            error_log('Plugitify get_chats fatal error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
+            // Debug: error_log('Plugitify get_chats fatal error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
             wp_send_json_error(array('message' => 'Fatal error: ' . $e->getMessage()));
         }
     }
@@ -214,7 +230,8 @@ class Plugitify_Panel {
      */
     public function handle_save_chat() {
         // Verify nonce
-        $nonce = isset($_POST['nonce']) ? $_POST['nonce'] : '';
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+        $nonce = isset($_POST['nonce']) ? wp_unslash($_POST['nonce']) : '';
         if (empty($nonce) || !wp_verify_nonce($nonce, 'plugitify_chat_nonce')) {
             wp_send_json_error(array('message' => 'Invalid nonce'));
             return;
@@ -241,7 +258,7 @@ class Plugitify_Panel {
                     }
                 } catch (\Exception $e) {
                     // If logging fails, don't break the flow
-                    error_log('Failed to log chat error: ' . $e->getMessage());
+                    // Debug: error_log('Failed to log chat error: ' . $e->getMessage());
                 }
             };
             
@@ -261,7 +278,7 @@ class Plugitify_Panel {
                 return;
             }
             
-            $title = isset($_POST['title']) ? sanitize_text_field($_POST['title']) : 'New Chat';
+            $title = isset($_POST['title']) ? sanitize_text_field(wp_unslash($_POST['title'])) : 'New Chat';
             $chat_id = isset($_POST['chat_id']) ? intval($_POST['chat_id']) : 0;
             $user_id = get_current_user_id();
 
@@ -295,7 +312,7 @@ class Plugitify_Panel {
                     // Log error
                     $log_error('error', 'Failed to create chat: ' . $error, array('db_error' => $error));
                     
-                    error_log('Plugitify insert chat error: ' . $error);
+                    // Debug: error_log('Plugitify insert chat error: ' . $error);
                     wp_send_json_error(array('message' => 'Failed to create chat: ' . $error));
                 }
             }
@@ -319,10 +336,10 @@ class Plugitify_Panel {
                 }
             } catch (\Exception $log_error) {
                 // If logging fails, don't break the flow
-                error_log('Failed to log chat error: ' . $log_error->getMessage());
+                // Debug: error_log('Failed to log chat error: ' . $log_error->getMessage());
             }
             
-            error_log('Plugitify save_chat error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
+            // Debug: error_log('Plugitify save_chat error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
             wp_send_json_error(array('message' => $error_msg));
         } catch (\Error $e) {
             $error_msg = 'Fatal error: ' . $e->getMessage();
@@ -344,10 +361,10 @@ class Plugitify_Panel {
                 }
             } catch (\Exception $log_error) {
                 // If logging fails, don't break the flow
-                error_log('Failed to log chat fatal error: ' . $log_error->getMessage());
+                // Debug: error_log('Failed to log chat fatal error: ' . $log_error->getMessage());
             }
             
-            error_log('Plugitify save_chat fatal error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
+            // Debug: error_log('Plugitify save_chat fatal error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
             wp_send_json_error(array('message' => $error_msg));
         }
     }
@@ -357,7 +374,8 @@ class Plugitify_Panel {
      */
     public function handle_delete_chat() {
         // Verify nonce
-        $nonce = isset($_POST['nonce']) ? $_POST['nonce'] : '';
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+        $nonce = isset($_POST['nonce']) ? wp_unslash($_POST['nonce']) : '';
         if (empty($nonce) || !wp_verify_nonce($nonce, 'plugitify_chat_nonce')) {
             wp_send_json_error(array('message' => 'Invalid nonce'));
             return;
@@ -413,7 +431,14 @@ class Plugitify_Panel {
      */
     public function handle_get_messages() {
         // Verify nonce
-        $nonce = isset($_GET['nonce']) ? $_GET['nonce'] : (isset($_POST['nonce']) ? $_POST['nonce'] : '');
+        $nonce = '';
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+        if (isset($_GET['nonce'])) {
+            $nonce = wp_unslash($_GET['nonce']);
+        } elseif (isset($_POST['nonce'])) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+            $nonce = wp_unslash($_POST['nonce']);
+        }
         if (empty($nonce) || !wp_verify_nonce($nonce, 'plugitify_chat_nonce')) {
             wp_send_json_error(array('message' => 'Invalid nonce'));
             return;
@@ -474,7 +499,8 @@ class Plugitify_Panel {
      */
     public function handle_save_ai_settings() {
         // Verify nonce
-        $nonce = isset($_POST['nonce']) ? $_POST['nonce'] : '';
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+        $nonce = isset($_POST['nonce']) ? wp_unslash($_POST['nonce']) : '';
         if (empty($nonce) || !wp_verify_nonce($nonce, 'plugitify_chat_nonce')) {
             wp_send_json_error(array('message' => 'Invalid nonce'));
             return;
@@ -486,8 +512,8 @@ class Plugitify_Panel {
         }
 
         try {
-            $apiKey = isset($_POST['apiKey']) ? sanitize_text_field($_POST['apiKey']) : '';
-            $model = isset($_POST['model']) ? sanitize_text_field($_POST['model']) : 'deepseek-chat';
+            $apiKey = isset($_POST['apiKey']) ? sanitize_text_field(wp_unslash($_POST['apiKey'])) : '';
+            $model = isset($_POST['model']) ? sanitize_text_field(wp_unslash($_POST['model'])) : 'deepseek-chat';
 
             // Validate model
             $allowed_models = array(
@@ -518,17 +544,17 @@ class Plugitify_Panel {
             // Verify the save immediately
             $verify = get_option('plugitify_ai_settings', array());
             
-            error_log('Plugitify: Saving AI settings - apiKey: ' . ($apiKey ? '***' : '(empty)') . ', model: ' . $model);
-            error_log('Plugitify: Settings saved: ' . ($saved ? 'true' : 'false'));
-            error_log('Plugitify: Verified settings: ' . print_r($verify, true));
+            // Debug: error_log('Plugitify: Saving AI settings - apiKey: ' . ($apiKey ? '***' : '(empty)') . ', model: ' . $model);
+            // Debug: error_log('Plugitify: Settings saved: ' . ($saved ? 'true' : 'false'));
+            // Debug: error_log('Plugitify: Verified settings: ' . print_r($verify, true));
             
             // Double check - if verification failed, try again
             if (empty($verify) || !isset($verify['model'])) {
-                error_log('Plugitify: WARNING - Settings verification failed, retrying...');
+                // Debug: error_log('Plugitify: WARNING - Settings verification failed, retrying...');
                 delete_option('plugitify_ai_settings');
                 $saved = add_option('plugitify_ai_settings', $settings, '', 'yes');
                 $verify = get_option('plugitify_ai_settings', array());
-                error_log('Plugitify: Retry result: ' . print_r($verify, true));
+                // Debug: error_log('Plugitify: Retry result: ' . print_r($verify, true));
             }
 
             wp_send_json_success(array(
@@ -545,7 +571,14 @@ class Plugitify_Panel {
      */
     public function handle_get_ai_settings() {
         // Verify nonce
-        $nonce = isset($_GET['nonce']) ? $_GET['nonce'] : (isset($_POST['nonce']) ? $_POST['nonce'] : '');
+        $nonce = '';
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+        if (isset($_GET['nonce'])) {
+            $nonce = wp_unslash($_GET['nonce']);
+        } elseif (isset($_POST['nonce'])) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+            $nonce = wp_unslash($_POST['nonce']);
+        }
         if (empty($nonce) || !wp_verify_nonce($nonce, 'plugitify_chat_nonce')) {
             wp_send_json_error(array('message' => 'Invalid nonce'));
             return;
@@ -560,19 +593,19 @@ class Plugitify_Panel {
             // Get settings from WordPress options
             $settings = get_option('plugitify_ai_settings', array());
             
-            error_log('Plugitify: Loading AI settings - Raw: ' . print_r($settings, true));
-            error_log('Plugitify: Loading AI settings - apiKey exists: ' . (isset($settings['apiKey']) ? 'yes' : 'no'));
-            error_log('Plugitify: Loading AI settings - model exists: ' . (isset($settings['model']) ? 'yes' : 'no'));
-            if (isset($settings['apiKey'])) {
-                error_log('Plugitify: Loading AI settings - apiKey length: ' . strlen($settings['apiKey']));
-            }
-            if (isset($settings['model'])) {
-                error_log('Plugitify: Loading AI settings - model: ' . $settings['model']);
-            }
+            // Debug: error_log('Plugitify: Loading AI settings - Raw: ' . print_r($settings, true));
+            // Debug: error_log('Plugitify: Loading AI settings - apiKey exists: ' . (isset($settings['apiKey']) ? 'yes' : 'no'));
+            // Debug: error_log('Plugitify: Loading AI settings - model exists: ' . (isset($settings['model']) ? 'yes' : 'no'));
+            // if (isset($settings['apiKey'])) {
+            //     error_log('Plugitify: Loading AI settings - apiKey length: ' . strlen($settings['apiKey']));
+            // }
+            // if (isset($settings['model'])) {
+            //     error_log('Plugitify: Loading AI settings - model: ' . $settings['model']);
+            // }
 
             // Set defaults if not set
             if (empty($settings) || !is_array($settings)) {
-                error_log('Plugitify: Settings empty or not array, using defaults');
+                // Debug: error_log('Plugitify: Settings empty or not array, using defaults');
                 $settings = array(
                     'apiKey' => '',
                     'model' => 'deepseek-chat'
@@ -587,7 +620,7 @@ class Plugitify_Panel {
                 $settings['model'] = 'deepseek-chat';
             }
             
-            error_log('Plugitify: Final settings to return: ' . print_r($settings, true));
+            // Debug: error_log('Plugitify: Final settings to return: ' . print_r($settings, true));
 
             wp_send_json_success(array('data' => $settings));
         } catch (\Exception $e) {

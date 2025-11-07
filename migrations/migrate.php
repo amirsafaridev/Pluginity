@@ -70,7 +70,7 @@ class Plugitify_Migrate {
         
         if (empty($migrations)) {
             $message = "No migrations to rollback.";
-            echo $message . "\n";
+            echo esc_html($message) . "\n";
             self::logMigration([
                 'action' => 'rollback',
                 'status' => 'info',
@@ -92,7 +92,7 @@ class Plugitify_Migrate {
                 $duration = round($end_time - $start_time, 2);
                 
                 $message = "✓ Migration rolled back: " . basename($last_migration);
-                echo $message . "\n";
+                echo esc_html($message) . "\n";
                 
                 // Save log
                 self::logMigration([
@@ -105,7 +105,7 @@ class Plugitify_Migrate {
                 ]);
             } catch (Exception $e) {
                 $message = "✗ Error rolling back " . basename($last_migration) . ": " . $e->getMessage();
-                echo $message . "\n";
+                echo esc_html($message) . "\n";
                 
                 // Save error log
                 self::logMigration([

@@ -1,3 +1,9 @@
+<?php
+/**
+ * Template file for main chat area
+ * This file contains only HTML markup, no PHP code
+ */
+?>
 <main class="ai-main">
     <div class="ai-main__inner">
         <div class="ai-thread" id="ai-chat-messages" aria-live="polite">
@@ -46,7 +52,7 @@
             <div class="ai-msg ai-msg--bot">
                 <div class="ai-avatar ai-avatar--bot" aria-hidden="true"></div>
                 <div class="ai-bubble">
-                    Got it. I’ll include both.
+                    Got it. I'll include both.
                     <div class="ai-meta"><span class="ai-meta__clock" aria-hidden="true"></span>10:05</div>
                 </div>
             </div>

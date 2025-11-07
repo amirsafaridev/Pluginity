@@ -8,7 +8,7 @@ Version: 1.0.0
 Author: Amir safari
 Author URI: https://amirsafaridev.github.io/
 License: GPLv2 or later
-Text Domain: plugitify
+Text Domain: pluginity
 */
 
 
