@@ -1,14 +1,14 @@
 <?php
 
 /*
-Plugin Name: Plugitify
+Plugin Name: plugitify
 Plugin URI: https://wpagentify.com
 Description: Create, customize, and export WordPress plugins with AI
 Version: 1.0.0
 Author: Amir safari
 Author URI: https://amirsafaridev.github.io/
 License: GPLv2 or later
-Text Domain: pluginity
+Text Domain: plugitify
 */
 
 

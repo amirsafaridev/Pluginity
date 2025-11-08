@@ -5,7 +5,7 @@
  * 
  * این جدول برای ذخیره تسک‌ها و کارهایی که هوش مصنوعی باید انجام دهد استفاده می‌شود
  */
-class CreateTasksTable {
+class Plugitify_CreateTasksTable {
     
     public function up() {
         return Plugitify_DB::schema()->create('tasks', function($table) {

@@ -6,7 +6,7 @@
  * این جدول برای ذخیره متا دیتای اضافی پیام‌ها استفاده می‌شود
  * ساختار مشابه wp_postmeta و wp_usermeta در WordPress
  */
-class CreateMessagesMetaTable {
+class Plugitify_CreateMessagesMetaTable {
     
     public function up() {
         return Plugitify_DB::schema()->create('messages_meta', function($table) {

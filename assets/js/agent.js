@@ -342,6 +342,8 @@ class Agent {
         this.observers = {};
         this.taskManager = null;
         this.chatId = null;
+        // Prompt Management System
+        this.prompts = []; // Array of prompt objects
         // Circuit Breaker: Track consecutive errors to prevent infinite loops
         this.errorTracker = {
             consecutiveErrors: 0,
@@ -418,6 +420,196 @@ class Agent {
     setInstructions(instructions) {
         this.instructions = instructions;
         return this;
+    }
+
+    /**
+     * Prompt Management Methods
+     */
+    
+    /**
+     * Add a structured prompt to the agent
+     * @param {string} title - Title of the prompt
+     * @param {string} section - Section category: 'system', 'tools', 'error_handling', 'output', or custom
+     * @param {string} priority - Priority level: 'critical', 'high', 'medium', 'low'
+     * @param {string} description - Detailed description/content of the prompt
+     * @param {Object} metadata - Optional metadata (tags, conditions, etc.)
+     * @returns {Object} The created prompt object
+     */
+    addPrompt(title, section, priority, description, metadata = {}) {
+        // Validate inputs
+        if (!title || typeof title !== 'string') {
+            throw new Error('Title must be a non-empty string');
+        }
+        if (!section || typeof section !== 'string') {
+            throw new Error('Section must be a non-empty string');
+        }
+        if (!priority || !['critical', 'high', 'medium', 'low'].includes(priority)) {
+            throw new Error('Priority must be one of: critical, high, medium, low');
+        }
+        if (!description || typeof description !== 'string') {
+            throw new Error('Description must be a non-empty string');
+        }
+
+        const prompt = {
+            id: metadata.id || `prompt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            title: title.trim(),
+            section: section.trim().toLowerCase(),
+            priority: priority.toLowerCase(),
+            description: description.trim(),
+            metadata: {
+                tags: metadata.tags || [],
+                conditions: metadata.conditions || null,
+                version: metadata.version || '1.0',
+                createdAt: new Date().toISOString(),
+                ...metadata
+            },
+            enabled: metadata.enabled !== false // Default to enabled
+        };
+
+        this.prompts.push(prompt);
+        return prompt;
+    }
+
+    /**
+     * Remove a prompt by ID
+     * @param {string} promptId - ID of the prompt to remove
+     * @returns {boolean} True if removed, false if not found
+     */
+    removePrompt(promptId) {
+        const index = this.prompts.findIndex(p => p.id === promptId);
+        if (index > -1) {
+            this.prompts.splice(index, 1);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Update an existing prompt
+     * @param {string} promptId - ID of the prompt to update
+     * @param {Object} updates - Object with fields to update
+     * @returns {Object|null} Updated prompt or null if not found
+     */
+    updatePrompt(promptId, updates) {
+        const prompt = this.prompts.find(p => p.id === promptId);
+        if (!prompt) {
+            return null;
+        }
+
+        if (updates.title !== undefined) prompt.title = updates.title.trim();
+        if (updates.section !== undefined) prompt.section = updates.section.trim().toLowerCase();
+        if (updates.priority !== undefined) {
+            if (!['critical', 'high', 'medium', 'low'].includes(updates.priority.toLowerCase())) {
+                throw new Error('Priority must be one of: critical, high, medium, low');
+            }
+            prompt.priority = updates.priority.toLowerCase();
+        }
+        if (updates.description !== undefined) prompt.description = updates.description.trim();
+        if (updates.metadata !== undefined) {
+            prompt.metadata = { ...prompt.metadata, ...updates.metadata };
+        }
+        if (updates.enabled !== undefined) prompt.enabled = updates.enabled;
+
+        return prompt;
+    }
+
+    /**
+     * Get all prompts as JSON
+     * @param {boolean} enabledOnly - If true, return only enabled prompts
+     * @returns {string} JSON string of all prompts
+     */
+    getPromptsJSON(enabledOnly = false) {
+        const prompts = enabledOnly 
+            ? this.prompts.filter(p => p.enabled)
+            : this.prompts;
+        return JSON.stringify(prompts, null, 2);
+    }
+
+    /**
+     * Load prompts from JSON
+     * @param {string} jsonString - JSON string of prompts
+     * @param {boolean} merge - If true, merge with existing prompts, otherwise replace
+     * @returns {boolean} True if successful, false otherwise
+     */
+    loadPromptsFromJSON(jsonString, merge = false) {
+        try {
+            const prompts = JSON.parse(jsonString);
+            if (!Array.isArray(prompts)) {
+                throw new Error('Prompts must be an array');
+            }
+
+            if (merge) {
+                this.prompts = [...this.prompts, ...prompts];
+            } else {
+                this.prompts = prompts;
+            }
+            return true;
+        } catch (error) {
+            console.error('Error loading prompts from JSON:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Get prompts by section
+     * @param {string} section - Section name
+     * @param {boolean} enabledOnly - If true, return only enabled prompts
+     * @returns {Array} Array of prompts in the section
+     */
+    getPromptsBySection(section, enabledOnly = false) {
+        let prompts = this.prompts.filter(p => p.section === section.toLowerCase());
+        if (enabledOnly) {
+            prompts = prompts.filter(p => p.enabled);
+        }
+        return prompts;
+    }
+
+    /**
+     * Get prompts by priority
+     * @param {string} priority - Priority level
+     * @param {boolean} enabledOnly - If true, return only enabled prompts
+     * @returns {Array} Array of prompts with the priority
+     */
+    getPromptsByPriority(priority, enabledOnly = false) {
+        let prompts = this.prompts.filter(p => p.priority === priority.toLowerCase());
+        if (enabledOnly) {
+            prompts = prompts.filter(p => p.enabled);
+        }
+        return prompts;
+    }
+
+    /**
+     * Clear all prompts
+     */
+    clearPrompts() {
+        this.prompts = [];
+        return this;
+    }
+
+    /**
+     * Get the final system prompt as JSON (includes instructions, prompts, and tools)
+     * @returns {string} JSON string containing system prompt data
+     */
+    getSystemPrompt() {
+        // Build JSON object with instructions, prompts, and tools
+        const systemPromptData = {
+            instructions: this.instructions,
+            prompts: this.prompts.filter(p => p.enabled).map(p => ({
+                title: p.title,
+                section: p.section,
+                priority: p.priority,
+                description: p.description,
+                enabled: p.enabled
+            })),
+            tools: this.getToolSchemas().map(tool => ({
+                name: tool.function.name,
+                description: tool.function.description,
+                parameters: tool.function.parameters
+            }))
+        };
+        
+        // Return as JSON string
+        return JSON.stringify(systemPromptData, null, 2);
     }
 
     /**
@@ -615,6 +807,9 @@ class Agent {
         // Prepare messages for provider
         const historyMessages = this.resolveChatHistory().getMessages();
         
+        // Get final system prompt as JSON
+        const finalSystemPrompt = this.getSystemPrompt();
+        
         // Call provider's chat method
         // The provider should handle system prompt, tools, and messages
         let response;
@@ -622,7 +817,7 @@ class Agent {
         if (typeof provider.chat === 'function') {
             // Provider has a chat method
             response = await provider.chat({
-                systemPrompt: this.instructions,
+                systemPrompt: finalSystemPrompt,
                 tools: this.getToolSchemas(),
                 messages: historyMessages
             });
@@ -695,11 +890,14 @@ class Agent {
         const provider = this.getProvider();
         const historyMessages = this.resolveChatHistory().getMessages();
 
+        // Get final system prompt as JSON
+        const finalSystemPrompt = this.getSystemPrompt();
+
         let streamGenerator;
         
         if (typeof provider.stream === 'function') {
             streamGenerator = provider.stream({
-                systemPrompt: this.instructions,
+                systemPrompt: finalSystemPrompt,
                 tools: this.getToolSchemas(),
                 messages: historyMessages
             });
@@ -783,7 +981,7 @@ class Agent {
             // Convert messages to provider format
             const formattedMessages = this._formatMessagesForProvider(messages);
             return await provider.chat({
-                systemPrompt: this.instructions,
+                systemPrompt: this.getSystemPrompt(),
                 tools: this.getToolSchemas(),
                 messages: formattedMessages
             });
@@ -799,7 +997,7 @@ class Agent {
         if (provider && typeof provider.stream === 'function') {
             const formattedMessages = this._formatMessagesForProvider(messages);
             const stream = provider.stream({
-                systemPrompt: this.instructions,
+                systemPrompt: this.getSystemPrompt(),
                 tools: this.getToolSchemas(),
                 messages: formattedMessages
             });

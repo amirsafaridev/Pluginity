@@ -6,7 +6,7 @@
  * این جدول برای ذخیره مراحل مختلف هر تسک استفاده می‌شود
  * هر تسک می‌تواند چندین مرحله داشته باشد
  */
-class CreateStepsTable {
+class Plugitify_CreateStepsTable {
     
     public function up() {
         return Plugitify_DB::schema()->create('steps', function($table) {

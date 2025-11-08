@@ -5,7 +5,7 @@
  * 
  * این جدول برای ذخیره تاریخچه چت‌های ادمین با هوش مصنوعی استفاده می‌شود
  */
-class CreateChatHistoryTable {
+class Plugitify_CreateChatHistoryTable {
     
     public function up() {
         return Plugitify_DB::schema()->create('chat_history', function($table) {

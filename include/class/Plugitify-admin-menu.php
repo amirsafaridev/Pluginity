@@ -960,11 +960,13 @@ class Plugitify_Admin_Menu {
             
             // Get steps for this task
             $steps_table_safe = esc_sql($steps_table);
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Table name is escaped with esc_sql(), direct query needed for custom table
+            // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+            // Table name is escaped with esc_sql(), query is prepared with $wpdb->prepare(), direct query needed for custom table
             $steps = $wpdb->get_results($wpdb->prepare(
                 "SELECT * FROM {$steps_table_safe} WHERE task_id = %d ORDER BY `order` ASC, created_at ASC",
                 $task_id
             ));
+            // phpcs:enable
             
             // Ensure steps is an array
             if (is_object($steps)) {

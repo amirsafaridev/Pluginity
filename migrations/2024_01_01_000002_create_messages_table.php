@@ -5,7 +5,7 @@
  * 
  * این جدول برای ذخیره پیام‌های رد و بدل شده در هر چت استفاده می‌شود
  */
-class CreateMessagesTable {
+class Plugitify_CreateMessagesTable {
     
     public function up() {
         return Plugitify_DB::schema()->create('messages', function($table) {

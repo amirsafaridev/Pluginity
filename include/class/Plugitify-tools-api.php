@@ -123,11 +123,13 @@ class Plugitify_Tools_API {
             global $wpdb;
             $steps_table = \Plugitify_DB::getFullTableName('steps');
             $steps_table_safe = esc_sql($steps_table);
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Table name is escaped with esc_sql(), direct query needed for custom table
+            // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+            // Table name is escaped with esc_sql(), query is prepared with $wpdb->prepare(), direct query needed for custom table
             $maxOrder = $wpdb->get_var($wpdb->prepare(
                 "SELECT MAX(`order`) FROM {$steps_table_safe} WHERE task_id = %d",
                 $taskId
             ));
+            // phpcs:enable
             $order = ($maxOrder !== null && $maxOrder !== false) ? intval($maxOrder) + 1 : 1;
 
             $stepData = [
@@ -348,6 +350,7 @@ class Plugitify_Tools_API {
      */
     public function handle_create_directory() {
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $path = isset($_POST['path']) ? sanitize_text_field(wp_unslash($_POST['path'])) : '';
         
         if (empty($path)) {
@@ -376,6 +379,7 @@ class Plugitify_Tools_API {
         }
         
         if (!is_dir($fullPath)) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Direct filesystem access required for plugin development tool
             if (mkdir($fullPath, 0755, true)) {
                 wp_send_json_success(array('result' => "Directory created successfully: {$fullPath}"));
             } else {
@@ -393,12 +397,13 @@ class Plugitify_Tools_API {
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
-        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce verified in validateRequest(), content is file content that will be written to file
         $content = isset($_POST['content']) ? wp_unslash($_POST['content']) : '';
         
         // Decode base64 content if it was encoded
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
-        if (isset($_POST['content_encoded']) && wp_unslash($_POST['content_encoded']) === '1') {
+        $content_encoded = isset($_POST['content_encoded']) ? sanitize_text_field(wp_unslash($_POST['content_encoded'])) : '';
+        if ($content_encoded === '1') {
             // Decode base64 (UTF-8 safe - JavaScript used btoa(unescape(encodeURIComponent(...))))
             $decoded = base64_decode($content, true);
             if ($decoded === false) {
@@ -450,9 +455,11 @@ class Plugitify_Tools_API {
         
         $dir = dirname($fullPath);
         if (!is_dir($dir)) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Direct filesystem access required for plugin development tool
             mkdir($dir, 0755, true);
         }
         
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Direct filesystem access required for plugin development tool
         if (file_put_contents($fullPath, $content) !== false) {
             wp_send_json_success(array('result' => "File created successfully: {$fullPath}"));
         } else {
@@ -503,6 +510,7 @@ class Plugitify_Tools_API {
             return;
         }
         
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Direct filesystem access required for plugin development tool
         if (unlink($fullPath)) {
             wp_send_json_success(array('result' => "File deleted successfully: {$fullPath}"));
         } else {
@@ -560,10 +568,12 @@ class Plugitify_Tools_API {
                 if (is_dir($filePath)) {
                     $deleteRecursive($filePath);
                 } else {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Direct filesystem access required for plugin development tool
                     unlink($filePath);
                 }
             }
             
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- Direct filesystem access required for plugin development tool
             return rmdir($dir);
         };
         
@@ -639,14 +649,15 @@ class Plugitify_Tools_API {
         $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $line_number = isset($_POST['line_number']) ? intval($_POST['line_number']) : 0;
-        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce verified in validateRequest(), content is file content that will be written to file
         $new_content = isset($_POST['new_content']) ? wp_unslash($_POST['new_content']) : '';
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $line_count = isset($_POST['line_count']) ? intval($_POST['line_count']) : 1;
         
         // Decode base64 content if it was encoded
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
-        if (isset($_POST['new_content_encoded']) && wp_unslash($_POST['new_content_encoded']) === '1') {
+        $new_content_encoded = isset($_POST['new_content_encoded']) ? sanitize_text_field(wp_unslash($_POST['new_content_encoded'])) : '';
+        if ($new_content_encoded === '1') {
             // Decode base64 (UTF-8 safe - JavaScript used btoa(unescape(encodeURIComponent(...))))
             $decoded = base64_decode($new_content, true);
             if ($decoded === false) {
@@ -753,15 +764,19 @@ class Plugitify_Tools_API {
         
         // Try to write file, with error handling
         try {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Direct filesystem access required for plugin development tool
             $write_result = @file_put_contents($fullPath, $new_content_full);
             if ($write_result === false) {
                 // Try alternative method: use file handle
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Direct filesystem access required for plugin development tool
                 $handle = @fopen($fullPath, 'w');
                 if ($handle === false) {
                     wp_send_json_error(array('message' => "Failed to write file: {$fullPath}. Check file permissions."));
                     return;
                 }
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- Direct filesystem access required for plugin development tool
                 $write_result = @fwrite($handle, $new_content_full);
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Direct filesystem access required for plugin development tool
                 @fclose($handle);
                 
                 if ($write_result === false) {
@@ -1113,12 +1128,14 @@ class Plugitify_Tools_API {
             return;
         }
         
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- Direct filesystem access required for plugin development tool
         if (!is_writable($wpConfigPath)) {
             wp_send_json_error(array('message' => "wp-config.php is not writable. Please check file permissions."));
             return;
         }
         
         // Read wp-config.php
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Direct filesystem access required for plugin development tool
         $content = file_get_contents($wpConfigPath);
         if ($content === false) {
             wp_send_json_error(array('message' => "Failed to read wp-config.php"));
@@ -1129,6 +1146,7 @@ class Plugitify_Tools_API {
         if ($enable) {
             $debugLogPath = defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR . '/debug.log' : ABSPATH . 'wp-content/debug.log';
             if (file_exists($debugLogPath)) {
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Direct filesystem access required for plugin development tool
                 @unlink($debugLogPath);
             }
         }
@@ -1183,6 +1201,7 @@ class Plugitify_Tools_API {
         }
         
         // Write back to wp-config.php
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Direct filesystem access required for plugin development tool
         $result = file_put_contents($wpConfigPath, $content);
         if ($result === false) {
             wp_send_json_error(array('message' => "Failed to write to wp-config.php"));
@@ -1349,7 +1368,7 @@ class Plugitify_Tools_API {
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
-        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce verified in validateRequest(), replacements is JSON that will be decoded and validated
         $replacements = isset($_POST['replacements']) ? wp_unslash($_POST['replacements']) : '';
         
         // Decode replacements if it was JSON encoded

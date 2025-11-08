@@ -6,7 +6,7 @@
  * این جدول برای ذخیره متا دیتای اضافی چت‌ها استفاده می‌شود
  * ساختار مشابه wp_postmeta و wp_usermeta در WordPress
  */
-class CreateChatHistoryMetaTable {
+class Plugitify_CreateChatHistoryMetaTable {
     
     public function up() {
         return Plugitify_DB::schema()->create('chat_history_meta', function($table) {

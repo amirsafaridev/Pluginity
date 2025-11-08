@@ -8,6 +8,7 @@
 <html>
     <head>
         <title>Plugitify</title>
+        <?php // phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedStylesheet -- Template loaded directly via template_include, wp_enqueue_style() not available ?>
         <link rel="stylesheet" href="<?php echo esc_url(PLUGITIFY_URL.'assets/css/panel.css'); ?>">
     </head>
     <body>

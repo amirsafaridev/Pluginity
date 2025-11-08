@@ -160,8 +160,8 @@ class Plugitify_Panel {
     public function handle_get_chats() {
         // Verify nonce
         $nonce = '';
-        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
         if (isset($_GET['nonce'])) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.NonceVerification.Recommended -- Nonce is verified via wp_verify_nonce(), not sanitized
             $nonce = wp_unslash($_GET['nonce']);
         } elseif (isset($_POST['nonce'])) {
             // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
@@ -432,8 +432,8 @@ class Plugitify_Panel {
     public function handle_get_messages() {
         // Verify nonce
         $nonce = '';
-        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
         if (isset($_GET['nonce'])) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.NonceVerification.Recommended -- Nonce is verified via wp_verify_nonce(), not sanitized
             $nonce = wp_unslash($_GET['nonce']);
         } elseif (isset($_POST['nonce'])) {
             // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
@@ -572,8 +572,8 @@ class Plugitify_Panel {
     public function handle_get_ai_settings() {
         // Verify nonce
         $nonce = '';
-        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
         if (isset($_GET['nonce'])) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.NonceVerification.Recommended -- Nonce is verified via wp_verify_nonce(), not sanitized
             $nonce = wp_unslash($_GET['nonce']);
         } elseif (isset($_POST['nonce'])) {
             // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized

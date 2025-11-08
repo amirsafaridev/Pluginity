@@ -445,6 +445,7 @@ class Plugitify_DB {
     public static function tableExists($table_name) {
         global $wpdb;
         $full_table_name = self::getFullTableName($table_name);
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Direct query needed to check table existence, caching not applicable
         $table_exists = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $full_table_name));
         return $table_exists === $full_table_name;
     }
