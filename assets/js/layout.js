@@ -1035,14 +1035,6 @@ createApp({
             // Store last user message for retry functionality
             this.lastUserMessage = messageContent;
             
-            // Save user message to database
-            try {
-                await this.callAPI('plugitify_save_chat', {
-                    chat_id: this.currentChatId,
-                    title: messageContent.substring(0, 30) + (messageContent.length > 30 ? '...' : '')
-                }).catch(() => {});
-            } catch (e) {}
-            
             // Show user message
             const userMessage = {
                 id: 'user_' + Date.now(),
