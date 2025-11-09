@@ -325,6 +325,125 @@ class Plugitify_Tools_API {
     }
 
     /**
+     * Check if file/directory belongs to a plugin and deactivate it if active
+     * This method silently handles deactivation - continues work even if deactivation fails
+     * 
+     * @param string $fullPath Full path to file or directory
+     * @return void
+     */
+    private function deactivatePluginIfNeeded(string $fullPath): void {
+        $pluginsDir = $this->getPluginsDir();
+        $pluginsDir = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $pluginsDir);
+        $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
+        
+        // Check if path is within plugins directory
+        if (strpos($fullPath, $pluginsDir) !== 0) {
+            return;
+        }
+        
+        // Get relative path from plugins directory
+        $relativePath = substr($fullPath, strlen($pluginsDir));
+        $relativePath = ltrim($relativePath, DIRECTORY_SEPARATOR);
+        
+        // Extract plugin directory name (first segment)
+        $pathParts = explode(DIRECTORY_SEPARATOR, $relativePath);
+        if (empty($pathParts[0])) {
+            return;
+        }
+        
+        $pluginDir = $pathParts[0];
+        $pluginPath = $pluginsDir . DIRECTORY_SEPARATOR . $pluginDir;
+        
+        // Check if it's a directory (plugin folder) - for existing directories
+        // For files that don't exist yet, check parent directories
+        $isPluginDir = is_dir($pluginPath);
+        if (!$isPluginDir) {
+            // For file paths, check if any parent directory is a plugin directory
+            $currentPath = dirname($fullPath);
+            while ($currentPath !== $pluginsDir && $currentPath !== dirname($currentPath)) {
+                $currentRelative = substr($currentPath, strlen($pluginsDir));
+                $currentRelative = ltrim($currentRelative, DIRECTORY_SEPARATOR);
+                $currentParts = explode(DIRECTORY_SEPARATOR, $currentRelative);
+                if (!empty($currentParts[0])) {
+                    $potentialPluginDir = $currentParts[0];
+                    $potentialPluginPath = $pluginsDir . DIRECTORY_SEPARATOR . $potentialPluginDir;
+                    if (is_dir($potentialPluginPath)) {
+                        $pluginDir = $potentialPluginDir;
+                        $pluginPath = $potentialPluginPath;
+                        $isPluginDir = true;
+                        break;
+                    }
+                }
+                $currentPath = dirname($currentPath);
+            }
+        }
+        
+        if (!$isPluginDir) {
+            return;
+        }
+        
+        // Try to find the main plugin file
+        if (!function_exists('get_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        
+        $allPlugins = get_plugins();
+        $pluginFile = null;
+        
+        // Look for plugin file that matches this directory
+        foreach ($allPlugins as $file => $pluginData) {
+            // Plugin file format is: plugin-dir/plugin-file.php
+            $pluginFileDir = dirname($file);
+            
+            // Handle root-level plugins (plugin-file.php)
+            if ($pluginFileDir === '.' || $pluginFileDir === '') {
+                $pluginFileDir = basename($file, '.php');
+            }
+            
+            if ($pluginFileDir === $pluginDir) {
+                $pluginFile = $file;
+                break;
+            }
+        }
+        
+        if (!$pluginFile) {
+            return;
+        }
+        
+        // Prevent deactivating Plugitify itself
+        if (stripos($pluginFile, 'plugitify') !== false || stripos($pluginFile, 'Pluginity') !== false) {
+            return;
+        }
+        
+        // Check if plugin is active
+        $activePlugins = get_option('active_plugins', []);
+        $isNetworkActive = false;
+        if (is_multisite()) {
+            $networkActivePlugins = get_site_option('active_sitewide_plugins', []);
+            $isNetworkActive = isset($networkActivePlugins[$pluginFile]);
+        }
+        
+        $isActive = in_array($pluginFile, $activePlugins);
+        
+        // If plugin is not active, nothing to do
+        if (!$isActive && !$isNetworkActive) {
+            return;
+        }
+        
+        // Deactivate the plugin - silently continue even if it fails
+        if (!function_exists('deactivate_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        
+        $result = deactivate_plugins($pluginFile);
+        
+        // Log error if deactivation failed, but continue anyway
+        if (is_wp_error($result)) {
+            error_log('Plugitify: Failed to deactivate plugin ' . $pluginFile . ' before file modification: ' . $result->get_error_message());
+        }
+    }
+
+    /**
      * Handle create_directory tool
      */
     public function handle_create_directory() {
@@ -361,6 +480,9 @@ class Plugitify_Tools_API {
             wp_send_json_error(array('message' => $errorMsg));
             return;
         }
+        
+        // Deactivate plugin if needed before making changes
+        $this->deactivatePluginIfNeeded($fullPath);
         
         $duration = microtime(true) - $startTime;
         if (!is_dir($fullPath)) {
@@ -452,6 +574,9 @@ class Plugitify_Tools_API {
             return;
         }
         
+        // Deactivate plugin if needed before making changes
+        $this->deactivatePluginIfNeeded($fullPath);
+        
         $dir = dirname($fullPath);
         if (!is_dir($dir)) {
             // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Direct filesystem access required for plugin development tool
@@ -508,6 +633,9 @@ class Plugitify_Tools_API {
             wp_send_json_error(array('message' => $errorMsg));
             return;
         }
+        
+        // Deactivate plugin if needed before making changes
+        $this->deactivatePluginIfNeeded($fullPath);
         
         if (!file_exists($fullPath)) {
             $duration = microtime(true) - $startTime;
@@ -575,6 +703,9 @@ class Plugitify_Tools_API {
             wp_send_json_error(array('message' => $errorMsg));
             return;
         }
+        
+        // Deactivate plugin if needed before making changes
+        $this->deactivatePluginIfNeeded($fullPath);
         
         if (!is_dir($fullPath)) {
             $duration = microtime(true) - $startTime;
@@ -761,6 +892,9 @@ class Plugitify_Tools_API {
             wp_send_json_error(array('message' => $errorMsg));
             return;
         }
+        
+        // Deactivate plugin if needed before making changes
+        $this->deactivatePluginIfNeeded($fullPath);
         
         if (!file_exists($fullPath)) {
             $duration = microtime(true) - $startTime;
@@ -1552,6 +1686,9 @@ class Plugitify_Tools_API {
             wp_send_json_error(array('message' => $errorMsg));
             return;
         }
+        
+        // Deactivate plugin if needed before making changes
+        $this->deactivatePluginIfNeeded($fullPath);
         
         if (!file_exists($fullPath)) {
             $duration = microtime(true) - $startTime;
