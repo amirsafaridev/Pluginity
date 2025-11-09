@@ -5,6 +5,7 @@ namespace Plugitify\Classes;
 class Plugitify_Tools_API {
     private static $currentChatId = null;
     private static $currentUserId = null;
+    private static $currentMessageId = null;
 
     public function __construct() {
         // Register AJAX endpoints for all tools
@@ -22,23 +23,27 @@ class Plugitify_Tools_API {
         add_action('wp_ajax_plugitify_tool_check_wp_debug_status', array($this, 'handle_check_wp_debug_status'));
         add_action('wp_ajax_plugitify_tool_search_replace_in_file', array($this, 'handle_search_replace_in_file'));
         add_action('wp_ajax_plugitify_tool_update_chat_title', array($this, 'handle_update_chat_title'));
+        add_action('wp_ajax_plugitify_tool_get_chat_tasks', array($this, 'handle_get_chat_tasks'));
     }
 
     /**
      * Set context for task tracking
      */
-    public static function setContext(?int $chatId = null, ?int $userId = null): void {
+    public static function setContext(?int $chatId = null, ?int $userId = null, ?int $messageId = null): void {
         self::$currentChatId = $chatId;
         self::$currentUserId = $userId ?: get_current_user_id();
+        self::$currentMessageId = $messageId;
     }
 
     /**
-     * Auto manage task and step for tool calls
+     * Create task and step after tool execution completes
+     * Creates a task with success or error status based on execution result
      */
-    private function autoManageTaskStep(string $toolName, array $details = []): ?array {
+    private function createTaskAfterExecution(string $toolName, array $details, bool $success, string $resultOrError, float $duration = 0): ?array {
         try {
             $chatId = self::$currentChatId;
             $userId = self::$currentUserId ?: get_current_user_id();
+            $messageId = self::$currentMessageId;
 
             if (!class_exists('\Plugitify_DB')) {
                 return null;
@@ -48,52 +53,17 @@ class Plugitify_Tools_API {
                 return null;
             }
 
-            // Complete all previous pending/in_progress tasks for this chat
-            if ($chatId) {
-                $pendingTasks = \Plugitify_DB::table('tasks')
+            // If message_id is not set in context, try to find the latest pending bot message for this chat
+            if (!$messageId && $chatId) {
+                $latestMessage = \Plugitify_DB::table('messages')
                     ->where('chat_history_id', $chatId)
-                    ->where('user_id', $userId)
-                    ->whereIn('status', ['pending', 'in_progress'])
-                    ->get();
-
-                if ($pendingTasks) {
-                    if (!is_array($pendingTasks)) {
-                        $pendingTasks = [$pendingTasks];
-                    }
-
-                    foreach ($pendingTasks as $task) {
-                        $taskId = is_object($task) ? $task->id : $task['id'];
-
-                        // Complete the task
-                        \Plugitify_DB::table('tasks')
-                            ->where('id', $taskId)
-                            ->where('user_id', $userId)
-                            ->update([
-                                'status' => 'completed',
-                                'progress' => 100
-                            ]);
-
-                        // Complete all steps for this task
-                        $pendingSteps = \Plugitify_DB::table('steps')
-                            ->where('task_id', $taskId)
-                            ->whereIn('status', ['pending', 'in_progress'])
-                            ->get();
-
-                        if ($pendingSteps) {
-                            if (!is_array($pendingSteps)) {
-                                $pendingSteps = [$pendingSteps];
-                            }
-
-                            foreach ($pendingSteps as $step) {
-                                $stepId = is_object($step) ? $step->id : $step['id'];
-                                \Plugitify_DB::table('steps')
-                                    ->where('id', $stepId)
-                                    ->update([
-                                        'status' => 'completed'
-                                    ]);
-                            }
-                        }
-                    }
+                    ->where('role', 'assistant')
+                    ->where('status', 'pending')
+                    ->orderBy('created_at', 'DESC')
+                    ->first();
+                
+                if ($latestMessage) {
+                    $messageId = is_object($latestMessage) ? ($latestMessage->id ?? null) : ($latestMessage['id'] ?? null);
                 }
             }
 
@@ -102,16 +72,35 @@ class Plugitify_Tools_API {
             $taskName = $this->buildDetailedTaskName($toolName, $details, $baseName);
             $description = $this->buildDetailedDescription($toolName, $details);
 
-            // Create a new task for this tool call
+            // Determine status and fields based on success/error
+            $taskStatus = $success ? 'completed' : 'failed';
+            $stepStatus = $success ? 'completed' : 'failed';
+            $progress = $success ? 100 : 0;
+            
+            // Get current timestamp
+            $currentTime = current_time('mysql');
+            
+            // Prepare task data
             $taskData = [
                 'chat_history_id' => $chatId,
+                'message_id' => $messageId,
                 'user_id' => $userId,
                 'task_name' => $taskName,
                 'task_type' => 'tool_execution',
                 'description' => $description,
-                'status' => 'in_progress',
-                'progress' => 0
+                'status' => $taskStatus,
+                'progress' => $progress,
+                'created_at' => $currentTime,
+                'updated_at' => $currentTime
             ];
+
+            // Add result or error message
+            if ($success) {
+                $taskData['result'] = $resultOrError;
+            } else {
+                $taskData['error_message'] = $resultOrError;
+                $taskData['result'] = null;
+            }
 
             $taskId = \Plugitify_DB::table('tasks')->insert($taskData);
 
@@ -137,8 +126,17 @@ class Plugitify_Tools_API {
                 'step_name' => $taskName,
                 'step_type' => 'tool_call',
                 'order' => $order,
-                'status' => 'pending'
+                'status' => $stepStatus,
+                'duration' => intval($duration)
             ];
+
+            // Add result or error message to step
+            if ($success) {
+                $stepData['result'] = $resultOrError;
+            } else {
+                $stepData['error_message'] = $resultOrError;
+                $stepData['result'] = null;
+            }
 
             $stepId = \Plugitify_DB::table('steps')->insert($stepData);
 
@@ -151,7 +149,7 @@ class Plugitify_Tools_API {
                 'step_id' => $stepId
             ];
         } catch (\Exception $e) {
-            // Debug: error_log('Plugitify: Failed to auto manage task/step: ' . $e->getMessage());
+            // Debug: error_log('Plugitify: Failed to create task after execution: ' . $e->getMessage());
             return null;
         }
     }
@@ -295,9 +293,10 @@ class Plugitify_Tools_API {
         // Set context
         $chat_id = isset($_POST['chat_id']) ? intval($_POST['chat_id']) : 0;
         $user_id = get_current_user_id();
-        self::setContext($chat_id, $user_id);
+        $message_id = isset($_POST['message_id']) ? intval($_POST['message_id']) : null;
+        self::setContext($chat_id, $user_id, $message_id);
 
-        return ['chat_id' => $chat_id, 'user_id' => $user_id];
+        return ['chat_id' => $chat_id, 'user_id' => $user_id, 'message_id' => $message_id];
     }
 
     /**
@@ -308,35 +307,15 @@ class Plugitify_Tools_API {
     }
 
     /**
-     * Check if a path is within the Pluginity plugin directory (protected)
+     * Check if a path contains plugitify or Pluginity (protected)
      * Returns true if the path is protected and should be blocked
+     * This checks the original path sent by the model, not the fullPath
      */
     private function isProtectedPath(string $path): bool {
-        // Get the Pluginity plugin directory
-        $plugitifyDir = defined('PLUGITIFY_DIR') ? PLUGITIFY_DIR : __DIR__ . '/../../';
-        $plugitifyDir = realpath($plugitifyDir);
-        
-        if (!$plugitifyDir) {
-            // Fallback: check by name if realpath fails
-            $normalizedPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $path);
-            if (stripos($normalizedPath, 'plugitify') !== false || 
-                stripos($normalizedPath, 'Pluginity') !== false) {
-                return true;
-            }
-            return false;
-        }
-        
-        // Normalize paths for comparison
-        $pathReal = realpath($path);
-        if ($pathReal) {
-            // Check if the path is within the Pluginity directory
-            if (strpos($pathReal, $plugitifyDir) === 0) {
-                return true;
-            }
-        }
-        
-        // Also check by name as a fallback (case-insensitive)
+        // Normalize the path for comparison
         $normalizedPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $path);
+        
+        // Check if the path contains "plugitify" or "Pluginity" (case-insensitive)
         if (stripos($normalizedPath, 'plugitify') !== false || 
             stripos($normalizedPath, 'Pluginity') !== false) {
             return true;
@@ -349,17 +328,19 @@ class Plugitify_Tools_API {
      * Handle create_directory tool
      */
     public function handle_create_directory() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $path = isset($_POST['path']) ? sanitize_text_field(wp_unslash($_POST['path'])) : '';
         
+        $details = ['path' => $path];
+        
         if (empty($path)) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('create_directory', $details, false, 'Path is required', $duration);
             wp_send_json_error(array('message' => 'Path is required'));
             return;
         }
-
-        // Auto manage task/step
-        $this->autoManageTaskStep('create_directory', ['path' => $path]);
 
         $pluginsDir = $this->getPluginsDir();
         $path = ltrim($path, '/\\');
@@ -373,20 +354,30 @@ class Plugitify_Tools_API {
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
         // Check if path is protected (Pluginity plugin directory)
-        if ($this->isProtectedPath($fullPath)) {
-            wp_send_json_error(array('message' => 'ERROR: Cannot create directories in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+        if ($this->isProtectedPath($path)) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'ERROR: Cannot create directories in the Pluginity/plugitify plugin directory. This is a protected system plugin.';
+            $this->createTaskAfterExecution('create_directory', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
+        $duration = microtime(true) - $startTime;
         if (!is_dir($fullPath)) {
             // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Direct filesystem access required for plugin development tool
             if (mkdir($fullPath, 0755, true)) {
-                wp_send_json_success(array('result' => "Directory created successfully: {$fullPath}"));
+                $result = "Directory created successfully: {$fullPath}";
+                $this->createTaskAfterExecution('create_directory', $details, true, $result, $duration);
+                wp_send_json_success(array('result' => $result));
             } else {
-                wp_send_json_error(array('message' => "Failed to create directory: {$fullPath}"));
+                $errorMsg = "Failed to create directory: {$fullPath}";
+                $this->createTaskAfterExecution('create_directory', $details, false, $errorMsg, $duration);
+                wp_send_json_error(array('message' => $errorMsg));
             }
         } else {
-            wp_send_json_success(array('result' => "Directory already exists: {$fullPath}"));
+            $result = "Directory already exists: {$fullPath}";
+            $this->createTaskAfterExecution('create_directory', $details, true, $result, $duration);
+            wp_send_json_success(array('result' => $result));
         }
     }
 
@@ -394,6 +385,7 @@ class Plugitify_Tools_API {
      * Handle create_file tool
      */
     public function handle_create_file() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
@@ -407,6 +399,8 @@ class Plugitify_Tools_API {
             // Decode base64 (UTF-8 safe - JavaScript used btoa(unescape(encodeURIComponent(...))))
             $decoded = base64_decode($content, true);
             if ($decoded === false) {
+                $duration = microtime(true) - $startTime;
+                $this->createTaskAfterExecution('create_file', ['file_path' => $file_path], false, 'Failed to decode file content', $duration);
                 wp_send_json_error(array('message' => 'Failed to decode file content'));
                 return;
             }
@@ -419,22 +413,24 @@ class Plugitify_Tools_API {
             $content = wp_unslash($content);
         }
         
+        $details = [
+            'file_path' => $file_path,
+            'file_size' => strlen($content)
+        ];
+        
         if (empty($file_path)) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('create_file', $details, false, 'File path is required', $duration);
             wp_send_json_error(array('message' => 'File path is required'));
             return;
         }
         
         if (empty($content) && $content !== '0') {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('create_file', $details, false, 'Content is required', $duration);
             wp_send_json_error(array('message' => 'Content is required'));
             return;
         }
-
-        // Auto manage task/step
-        $this->autoManageTaskStep('create_file', [
-            'file_path' => $file_path,
-            'content' => $content,
-            'file_size' => strlen($content)
-        ]);
 
         $pluginsDir = $this->getPluginsDir();
         $file_path = ltrim($file_path, '/\\');
@@ -448,8 +444,11 @@ class Plugitify_Tools_API {
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
         // Check if path is protected (Pluginity plugin directory)
-        if ($this->isProtectedPath($fullPath)) {
-            wp_send_json_error(array('message' => 'ERROR: Cannot create files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+        if ($this->isProtectedPath($file_path)) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'ERROR: Cannot create files in the Pluginity/plugitify plugin directory. This is a protected system plugin.';
+            $this->createTaskAfterExecution('create_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -459,11 +458,16 @@ class Plugitify_Tools_API {
             mkdir($dir, 0755, true);
         }
         
+        $duration = microtime(true) - $startTime;
         // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Direct filesystem access required for plugin development tool
         if (file_put_contents($fullPath, $content) !== false) {
-            wp_send_json_success(array('result' => "File created successfully: {$fullPath}"));
+            $result = "File created successfully: {$fullPath}";
+            $this->createTaskAfterExecution('create_file', $details, true, $result, $duration);
+            wp_send_json_success(array('result' => $result));
         } else {
-            wp_send_json_error(array('message' => "Failed to create file: {$fullPath}"));
+            $errorMsg = "Failed to create file: {$fullPath}";
+            $this->createTaskAfterExecution('create_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
         }
     }
 
@@ -471,17 +475,19 @@ class Plugitify_Tools_API {
      * Handle delete_file tool
      */
     public function handle_delete_file() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
         
+        $details = ['file_path' => $file_path];
+        
         if (empty($file_path)) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('delete_file', $details, false, 'File path is required', $duration);
             wp_send_json_error(array('message' => 'File path is required'));
             return;
         }
-
-        // Auto manage task/step
-        $this->autoManageTaskStep('delete_file', ['file_path' => $file_path]);
 
         $pluginsDir = $this->getPluginsDir();
         $file_path = ltrim($file_path, '/\\');
@@ -495,26 +501,40 @@ class Plugitify_Tools_API {
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
         // Check if path is protected (Pluginity plugin directory)
-        if ($this->isProtectedPath($fullPath)) {
-            wp_send_json_error(array('message' => 'ERROR: Cannot delete files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+        if ($this->isProtectedPath($file_path)) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'ERROR: Cannot delete files in the Pluginity/plugitify plugin directory. This is a protected system plugin.';
+            $this->createTaskAfterExecution('delete_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!file_exists($fullPath)) {
-            wp_send_json_error(array('message' => "File does not exist: {$fullPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "File does not exist: {$fullPath}";
+            $this->createTaskAfterExecution('delete_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!is_file($fullPath)) {
-            wp_send_json_error(array('message' => "Path is not a file: {$fullPath}. Use delete_directory to remove directories."));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Path is not a file: {$fullPath}. Use delete_directory to remove directories.";
+            $this->createTaskAfterExecution('delete_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
+        $duration = microtime(true) - $startTime;
         // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Direct filesystem access required for plugin development tool
         if (unlink($fullPath)) {
-            wp_send_json_success(array('result' => "File deleted successfully: {$fullPath}"));
+            $result = "File deleted successfully: {$fullPath}";
+            $this->createTaskAfterExecution('delete_file', $details, true, $result, $duration);
+            wp_send_json_success(array('result' => $result));
         } else {
-            wp_send_json_error(array('message' => "Failed to delete file: {$fullPath}"));
+            $errorMsg = "Failed to delete file: {$fullPath}";
+            $this->createTaskAfterExecution('delete_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
         }
     }
 
@@ -522,17 +542,19 @@ class Plugitify_Tools_API {
      * Handle delete_directory tool
      */
     public function handle_delete_directory() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $path = isset($_POST['path']) ? sanitize_text_field(wp_unslash($_POST['path'])) : '';
         
+        $details = ['path' => $path];
+        
         if (empty($path)) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('delete_directory', $details, false, 'Path is required', $duration);
             wp_send_json_error(array('message' => 'Path is required'));
             return;
         }
-
-        // Auto manage task/step
-        $this->autoManageTaskStep('delete_directory', ['path' => $path]);
 
         $pluginsDir = $this->getPluginsDir();
         $path = ltrim($path, '/\\');
@@ -546,13 +568,19 @@ class Plugitify_Tools_API {
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
         // Check if path is protected (Pluginity plugin directory)
-        if ($this->isProtectedPath($fullPath)) {
-            wp_send_json_error(array('message' => 'ERROR: Cannot delete directories in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+        if ($this->isProtectedPath($path)) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'ERROR: Cannot delete directories in the Pluginity/plugitify plugin directory. This is a protected system plugin.';
+            $this->createTaskAfterExecution('delete_directory', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!is_dir($fullPath)) {
-            wp_send_json_error(array('message' => "Directory does not exist: {$fullPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Directory does not exist: {$fullPath}";
+            $this->createTaskAfterExecution('delete_directory', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -577,10 +605,15 @@ class Plugitify_Tools_API {
             return rmdir($dir);
         };
         
+        $duration = microtime(true) - $startTime;
         if ($deleteRecursive($fullPath)) {
-            wp_send_json_success(array('result' => "Directory deleted successfully: {$fullPath}"));
+            $result = "Directory deleted successfully: {$fullPath}";
+            $this->createTaskAfterExecution('delete_directory', $details, true, $result, $duration);
+            wp_send_json_success(array('result' => $result));
         } else {
-            wp_send_json_error(array('message' => "Failed to delete directory: {$fullPath}"));
+            $errorMsg = "Failed to delete directory: {$fullPath}";
+            $this->createTaskAfterExecution('delete_directory', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
         }
     }
 
@@ -588,17 +621,19 @@ class Plugitify_Tools_API {
      * Handle read_file tool
      */
     public function handle_read_file() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
         
+        $details = ['file_path' => $file_path];
+        
         if (empty($file_path)) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('read_file', $details, false, 'File path is required', $duration);
             wp_send_json_error(array('message' => 'File path is required'));
             return;
         }
-
-        // Auto manage task/step
-        $this->autoManageTaskStep('read_file', ['file_path' => $file_path]);
 
         $pluginsDir = $this->getPluginsDir();
         $file_path = ltrim($file_path, '/\\');
@@ -616,34 +651,49 @@ class Plugitify_Tools_API {
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
         // Check if path is protected (Pluginity plugin directory)
-        if ($this->isProtectedPath($fullPath)) {
-            wp_send_json_error(array('message' => 'ERROR: Cannot read files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+        if ($this->isProtectedPath($file_path)) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'ERROR: Cannot read files in the Pluginity/plugitify plugin directory. This is a protected system plugin.';
+            $this->createTaskAfterExecution('read_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!file_exists($fullPath)) {
-            wp_send_json_error(array('message' => "File not found: {$fullPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "File not found: {$fullPath}";
+            $this->createTaskAfterExecution('read_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!is_file($fullPath)) {
-            wp_send_json_error(array('message' => "Path is not a file: {$fullPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Path is not a file: {$fullPath}";
+            $this->createTaskAfterExecution('read_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         $content = file_get_contents($fullPath);
+        $duration = microtime(true) - $startTime;
         if ($content === false) {
-            wp_send_json_error(array('message' => "Failed to read file: {$fullPath}"));
+            $errorMsg = "Failed to read file: {$fullPath}";
+            $this->createTaskAfterExecution('read_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
-        wp_send_json_success(array('result' => "File content ({$fullPath}):\n\n" . $content));
+        $result = "File content ({$fullPath}):\n\n" . $content;
+        $this->createTaskAfterExecution('read_file', $details, true, $result, $duration);
+        wp_send_json_success(array('result' => $result));
     }
 
     /**
      * Handle edit_file_line tool
      */
     public function handle_edit_file_line() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
@@ -661,6 +711,8 @@ class Plugitify_Tools_API {
             // Decode base64 (UTF-8 safe - JavaScript used btoa(unescape(encodeURIComponent(...))))
             $decoded = base64_decode($new_content, true);
             if ($decoded === false) {
+                $duration = microtime(true) - $startTime;
+                $this->createTaskAfterExecution('edit_file_line', ['file_path' => $file_path], false, 'Failed to decode file content', $duration);
                 wp_send_json_error(array('message' => 'Failed to decode file content'));
                 return;
             }
@@ -673,17 +725,18 @@ class Plugitify_Tools_API {
             $new_content = wp_unslash($new_content);
         }
         
-        if (empty($file_path) || $line_number < 1) {
-            wp_send_json_error(array('message' => 'File path and valid line number are required'));
-            return;
-        }
-
-        // Auto manage task/step
-        $this->autoManageTaskStep('edit_file_line', [
+        $details = [
             'file_path' => $file_path,
             'line_number' => $line_number,
             'line_count' => $line_count
-        ]);
+        ];
+        
+        if (empty($file_path) || $line_number < 1) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('edit_file_line', $details, false, 'File path and valid line number are required', $duration);
+            wp_send_json_error(array('message' => 'File path and valid line number are required'));
+            return;
+        }
 
         $pluginsDir = $this->getPluginsDir();
         $file_path = ltrim($file_path, '/\\');
@@ -701,24 +754,36 @@ class Plugitify_Tools_API {
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
         // Check if path is protected (Pluginity plugin directory)
-        if ($this->isProtectedPath($fullPath)) {
-            wp_send_json_error(array('message' => 'ERROR: Cannot edit files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+        if ($this->isProtectedPath($file_path)) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'ERROR: Cannot edit files in the Pluginity/plugitify plugin directory. This is a protected system plugin.';
+            $this->createTaskAfterExecution('edit_file_line', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!file_exists($fullPath)) {
-            wp_send_json_error(array('message' => "File not found: {$fullPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "File not found: {$fullPath}";
+            $this->createTaskAfterExecution('edit_file_line', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!is_file($fullPath)) {
-            wp_send_json_error(array('message' => "Path is not a file: {$fullPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Path is not a file: {$fullPath}";
+            $this->createTaskAfterExecution('edit_file_line', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         $content = file_get_contents($fullPath);
         if ($content === false) {
-            wp_send_json_error(array('message' => "Failed to read file: {$fullPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Failed to read file: {$fullPath}";
+            $this->createTaskAfterExecution('edit_file_line', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -737,7 +802,10 @@ class Plugitify_Tools_API {
         
         // Handle out of range line numbers intelligently
         if ($line_number < 1) {
-            wp_send_json_error(array('message' => "Line number must be greater than 0. File has {$total_lines} lines."));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Line number must be greater than 0. File has {$total_lines} lines.";
+            $this->createTaskAfterExecution('edit_file_line', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -763,6 +831,7 @@ class Plugitify_Tools_API {
         $new_content_full = implode("\n", $updated_lines);
         
         // Try to write file, with error handling
+        $duration = microtime(true) - $startTime;
         try {
             // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Direct filesystem access required for plugin development tool
             $write_result = @file_put_contents($fullPath, $new_content_full);
@@ -771,7 +840,9 @@ class Plugitify_Tools_API {
                 // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Direct filesystem access required for plugin development tool
                 $handle = @fopen($fullPath, 'w');
                 if ($handle === false) {
-                    wp_send_json_error(array('message' => "Failed to write file: {$fullPath}. Check file permissions."));
+                    $errorMsg = "Failed to write file: {$fullPath}. Check file permissions.";
+                    $this->createTaskAfterExecution('edit_file_line', $details, false, $errorMsg, $duration);
+                    wp_send_json_error(array('message' => $errorMsg));
                     return;
                 }
                 // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- Direct filesystem access required for plugin development tool
@@ -780,14 +851,20 @@ class Plugitify_Tools_API {
                 @fclose($handle);
                 
                 if ($write_result === false) {
-                    wp_send_json_error(array('message' => "Failed to write file: {$fullPath}. Check file permissions."));
+                    $errorMsg = "Failed to write file: {$fullPath}. Check file permissions.";
+                    $this->createTaskAfterExecution('edit_file_line', $details, false, $errorMsg, $duration);
+                    wp_send_json_error(array('message' => $errorMsg));
                     return;
                 }
             }
             
-            wp_send_json_success(array('result' => "Successfully {$action_message} in file: {$fullPath}"));
+            $result = "Successfully {$action_message} in file: {$fullPath}";
+            $this->createTaskAfterExecution('edit_file_line', $details, true, $result, $duration);
+            wp_send_json_success(array('result' => $result));
         } catch (Exception $e) {
-            wp_send_json_error(array('message' => "Error writing file: {$fullPath}. " . $e->getMessage()));
+            $errorMsg = "Error writing file: {$fullPath}. " . $e->getMessage();
+            $this->createTaskAfterExecution('edit_file_line', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
         }
     }
 
@@ -795,12 +872,12 @@ class Plugitify_Tools_API {
      * Handle list_plugins tool
      */
     public function handle_list_plugins() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $status = isset($_POST['status']) ? sanitize_text_field(wp_unslash($_POST['status'])) : null;
 
-        // Auto manage task/step
-        $this->autoManageTaskStep('list_plugins', ['status' => $status ?? 'all']);
+        $details = ['status' => $status ?? 'all'];
 
         if (!function_exists('get_plugins')) {
             require_once ABSPATH . 'wp-admin/includes/plugin.php';
@@ -856,6 +933,8 @@ class Plugitify_Tools_API {
             $response .= "\n";
         }
         
+        $duration = microtime(true) - $startTime;
+        $this->createTaskAfterExecution('list_plugins', $details, true, $response, $duration);
         wp_send_json_success(array('result' => $response));
     }
 
@@ -863,17 +942,19 @@ class Plugitify_Tools_API {
      * Handle deactivate_plugin tool
      */
     public function handle_deactivate_plugin() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $plugin_file = isset($_POST['plugin_file']) ? sanitize_text_field(wp_unslash($_POST['plugin_file'])) : '';
         
+        $details = ['plugin_file' => $plugin_file];
+        
         if (empty($plugin_file)) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('deactivate_plugin', $details, false, 'Plugin file is required', $duration);
             wp_send_json_error(array('message' => 'Plugin file is required'));
             return;
         }
-
-        // Auto manage task/step
-        $this->autoManageTaskStep('deactivate_plugin', ['plugin_file' => $plugin_file]);
 
         if (!function_exists('deactivate_plugins')) {
             require_once ABSPATH . 'wp-admin/includes/plugin.php';
@@ -896,7 +977,10 @@ class Plugitify_Tools_API {
         }
         
         if (!$pluginPath) {
-            wp_send_json_error(array('message' => "Plugin not found: {$plugin_file}. Use list_plugins to see available plugins."));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Plugin not found: {$plugin_file}. Use list_plugins to see available plugins.";
+            $this->createTaskAfterExecution('deactivate_plugin', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -909,44 +993,55 @@ class Plugitify_Tools_API {
         
         $isActive = in_array($pluginPath, $activePlugins);
         
+        $duration = microtime(true) - $startTime;
         if (!$isActive && !$isNetworkActive) {
             $pluginName = $allPlugins[$pluginPath]['Name'] ?? $pluginPath;
-            wp_send_json_success(array('result' => "Plugin '{$pluginName}' is already inactive."));
+            $result = "Plugin '{$pluginName}' is already inactive.";
+            $this->createTaskAfterExecution('deactivate_plugin', $details, true, $result, $duration);
+            wp_send_json_success(array('result' => $result));
             return;
         }
         
         // Prevent deactivating Plugitify itself
         if (stripos($pluginPath, 'plugitify') !== false || stripos($pluginPath, 'Pluginity') !== false) {
-            wp_send_json_error(array('message' => 'ERROR: Cannot deactivate the Pluginity/plugitify plugin. This is a protected system plugin.'));
+            $errorMsg = 'ERROR: Cannot deactivate the Pluginity/plugitify plugin. This is a protected system plugin.';
+            $this->createTaskAfterExecution('deactivate_plugin', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         $result = deactivate_plugins($pluginPath);
         
         if (is_wp_error($result)) {
-            wp_send_json_error(array('message' => "Failed to deactivate plugin: " . $result->get_error_message()));
+            $errorMsg = "Failed to deactivate plugin: " . $result->get_error_message();
+            $this->createTaskAfterExecution('deactivate_plugin', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         $pluginName = $allPlugins[$pluginPath]['Name'] ?? $pluginPath;
-        wp_send_json_success(array('result' => "Plugin '{$pluginName}' ({$pluginPath}) has been successfully deactivated."));
+        $resultMsg = "Plugin '{$pluginName}' ({$pluginPath}) has been successfully deactivated.";
+        $this->createTaskAfterExecution('deactivate_plugin', $details, true, $resultMsg, $duration);
+        wp_send_json_success(array('result' => $resultMsg));
     }
 
     /**
      * Handle extract_plugin_structure tool
      */
     public function handle_extract_plugin_structure() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $plugin_name = isset($_POST['plugin_name']) ? sanitize_text_field(wp_unslash($_POST['plugin_name'])) : '';
         
+        $details = ['plugin_name' => $plugin_name];
+        
         if (empty($plugin_name)) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('extract_plugin_structure', $details, false, 'Plugin name is required', $duration);
             wp_send_json_error(array('message' => 'Plugin name is required'));
             return;
         }
-
-        // Auto manage task/step
-        $this->autoManageTaskStep('extract_plugin_structure', ['plugin_name' => $plugin_name]);
 
         $pluginsDir = $this->getPluginsDir();
         $plugin_name = trim($plugin_name, '/\\');
@@ -954,13 +1049,19 @@ class Plugitify_Tools_API {
         $plugin_path = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $plugin_path);
         
         // Check if path is protected (Pluginity plugin directory)
-        if ($this->isProtectedPath($plugin_path)) {
-            wp_send_json_error(array('message' => 'ERROR: Cannot extract structure from the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+        if ($this->isProtectedPath($plugin_name)) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'ERROR: Cannot extract structure from the Pluginity/plugitify plugin directory. This is a protected system plugin.';
+            $this->createTaskAfterExecution('extract_plugin_structure', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!is_dir($plugin_path)) {
-            wp_send_json_error(array('message' => "Plugin directory not found: {$plugin_path}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Plugin directory not found: {$plugin_path}";
+            $this->createTaskAfterExecution('extract_plugin_structure', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -1101,6 +1202,8 @@ class Plugitify_Tools_API {
             $output .= "    🔗 {$filter['hook']} (in {$filter['file']})\n";
         }
         
+        $duration = microtime(true) - $startTime;
+        $this->createTaskAfterExecution('extract_plugin_structure', $details, true, $output, $duration);
         wp_send_json_success(array('result' => $output));
     }
 
@@ -1108,29 +1211,37 @@ class Plugitify_Tools_API {
      * Handle toggle_wp_debug tool
      */
     public function handle_toggle_wp_debug() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $enable = isset($_POST['enable']) ? filter_var(wp_unslash($_POST['enable']), FILTER_VALIDATE_BOOLEAN) : null;
         
+        $details = ['enable' => $enable];
+        
         if ($enable === null) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('toggle_wp_debug', $details, false, 'Enable parameter is required (true or false)', $duration);
             wp_send_json_error(array('message' => 'Enable parameter is required (true or false)'));
             return;
         }
-
-        // Auto manage task/step
-        $this->autoManageTaskStep('toggle_wp_debug', ['enable' => $enable]);
 
         // Get wp-config.php path
         $wpConfigPath = defined('ABSPATH') ? ABSPATH . 'wp-config.php' : '';
         
         if (!file_exists($wpConfigPath)) {
-            wp_send_json_error(array('message' => "wp-config.php not found at: {$wpConfigPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "wp-config.php not found at: {$wpConfigPath}";
+            $this->createTaskAfterExecution('toggle_wp_debug', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- Direct filesystem access required for plugin development tool
         if (!is_writable($wpConfigPath)) {
-            wp_send_json_error(array('message' => "wp-config.php is not writable. Please check file permissions."));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "wp-config.php is not writable. Please check file permissions.";
+            $this->createTaskAfterExecution('toggle_wp_debug', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -1138,7 +1249,10 @@ class Plugitify_Tools_API {
         // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Direct filesystem access required for plugin development tool
         $content = file_get_contents($wpConfigPath);
         if ($content === false) {
-            wp_send_json_error(array('message' => "Failed to read wp-config.php"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Failed to read wp-config.php";
+            $this->createTaskAfterExecution('toggle_wp_debug', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -1201,10 +1315,13 @@ class Plugitify_Tools_API {
         }
         
         // Write back to wp-config.php
+        $duration = microtime(true) - $startTime;
         // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Direct filesystem access required for plugin development tool
         $result = file_put_contents($wpConfigPath, $content);
         if ($result === false) {
-            wp_send_json_error(array('message' => "Failed to write to wp-config.php"));
+            $errorMsg = "Failed to write to wp-config.php";
+            $this->createTaskAfterExecution('toggle_wp_debug', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -1216,6 +1333,7 @@ class Plugitify_Tools_API {
             $message .= "\nPrevious log file has been cleared.";
         }
         
+        $this->createTaskAfterExecution('toggle_wp_debug', $details, true, $message, $duration);
         wp_send_json_success(array('result' => $message));
     }
 
@@ -1223,37 +1341,48 @@ class Plugitify_Tools_API {
      * Handle read_debug_log tool
      */
     public function handle_read_debug_log() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $lines = isset($_POST['lines']) ? intval($_POST['lines']) : 100; // Default last 100 lines
         
-        // Auto manage task/step
-        $this->autoManageTaskStep('read_debug_log', ['lines' => $lines]);
+        $details = ['lines' => $lines];
 
         // Get debug.log path
         $debugLogPath = defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR . '/debug.log' : ABSPATH . 'wp-content/debug.log';
         
         if (!file_exists($debugLogPath)) {
-            wp_send_json_error(array('message' => "Debug log file not found at: {$debugLogPath}\n\nMake sure WP_DEBUG and WP_DEBUG_LOG are enabled in wp-config.php"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Debug log file not found at: {$debugLogPath}\n\nMake sure WP_DEBUG and WP_DEBUG_LOG are enabled in wp-config.php";
+            $this->createTaskAfterExecution('read_debug_log', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!is_readable($debugLogPath)) {
-            wp_send_json_error(array('message' => "Debug log file is not readable. Please check file permissions."));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Debug log file is not readable. Please check file permissions.";
+            $this->createTaskAfterExecution('read_debug_log', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         // Get file size
         $fileSize = filesize($debugLogPath);
+        $duration = microtime(true) - $startTime;
         if ($fileSize === 0) {
-            wp_send_json_success(array('result' => "Debug log file is empty.\n\nNo errors have been logged yet."));
+            $result = "Debug log file is empty.\n\nNo errors have been logged yet.";
+            $this->createTaskAfterExecution('read_debug_log', $details, true, $result, $duration);
+            wp_send_json_success(array('result' => $result));
             return;
         }
         
         // Read the file
         $content = file_get_contents($debugLogPath);
         if ($content === false) {
-            wp_send_json_error(array('message' => "Failed to read debug log file"));
+            $errorMsg = "Failed to read debug log file";
+            $this->createTaskAfterExecution('read_debug_log', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -1273,6 +1402,7 @@ class Plugitify_Tools_API {
             $output .= $content;
         }
         
+        $this->createTaskAfterExecution('read_debug_log', $details, true, $output, $duration);
         wp_send_json_success(array('result' => $output));
     }
 
@@ -1280,10 +1410,10 @@ class Plugitify_Tools_API {
      * Handle check_wp_debug_status tool
      */
     public function handle_check_wp_debug_status() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         
-        // Auto manage task/step
-        $this->autoManageTaskStep('check_wp_debug_status', []);
+        $details = [];
 
         // Get current WordPress constants
         $wpDebug = defined('WP_DEBUG') ? WP_DEBUG : false;
@@ -1358,6 +1488,8 @@ class Plugitify_Tools_API {
             $output .= "  • Configuration looks good! ✅\n";
         }
         
+        $duration = microtime(true) - $startTime;
+        $this->createTaskAfterExecution('check_wp_debug_status', $details, true, $output, $duration);
         wp_send_json_success(array('result' => $output));
     }
 
@@ -1365,6 +1497,7 @@ class Plugitify_Tools_API {
      * Handle search_replace_in_file tool
      */
     public function handle_search_replace_in_file() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $file_path = isset($_POST['file_path']) ? sanitize_text_field(wp_unslash($_POST['file_path'])) : '';
@@ -1376,21 +1509,25 @@ class Plugitify_Tools_API {
             $replacements = json_decode(stripslashes($replacements), true);
         }
         
+        $details = [
+            'file_path' => $file_path,
+            'replacements_count' => is_array($replacements) ? count($replacements) : 0
+        ];
+        
         if (empty($file_path)) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('search_replace_in_file', $details, false, 'File path is required', $duration);
             wp_send_json_error(array('message' => 'File path is required'));
             return;
         }
         
         if (empty($replacements) || !is_array($replacements)) {
-            wp_send_json_error(array('message' => 'Replacements array is required. Format: [{"search": "old text", "replace": "new text"}, ...]'));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'Replacements array is required. Format: [{"search": "old text", "replace": "new text"}, ...]';
+            $this->createTaskAfterExecution('search_replace_in_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
-
-        // Auto manage task/step
-        $this->autoManageTaskStep('search_replace_in_file', [
-            'file_path' => $file_path,
-            'replacements_count' => count($replacements)
-        ]);
 
         $pluginsDir = $this->getPluginsDir();
         $file_path = ltrim($file_path, '/\\');
@@ -1408,25 +1545,37 @@ class Plugitify_Tools_API {
         $fullPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $fullPath);
         
         // Check if path is protected (Pluginity plugin directory)
-        if ($this->isProtectedPath($fullPath)) {
-            wp_send_json_error(array('message' => 'ERROR: Cannot edit files in the Pluginity/plugitify plugin directory. This is a protected system plugin.'));
+        if ($this->isProtectedPath($file_path)) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'ERROR: Cannot edit files in the Pluginity/plugitify plugin directory. This is a protected system plugin.';
+            $this->createTaskAfterExecution('search_replace_in_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!file_exists($fullPath)) {
-            wp_send_json_error(array('message' => "File not found: {$fullPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "File not found: {$fullPath}";
+            $this->createTaskAfterExecution('search_replace_in_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         if (!is_file($fullPath)) {
-            wp_send_json_error(array('message' => "Path is not a file: {$fullPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Path is not a file: {$fullPath}";
+            $this->createTaskAfterExecution('search_replace_in_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         // Read file content
         $content = file_get_contents($fullPath);
         if ($content === false) {
-            wp_send_json_error(array('message' => "Failed to read file: {$fullPath}"));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Failed to read file: {$fullPath}";
+            $this->createTaskAfterExecution('search_replace_in_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -1437,7 +1586,10 @@ class Plugitify_Tools_API {
         // Process each replacement
         foreach ($replacements as $index => $replacement) {
             if (!isset($replacement['search']) || !isset($replacement['replace'])) {
-                wp_send_json_error(array('message' => "Invalid replacement at index {$index}. Each replacement must have 'search' and 'replace' keys."));
+                $duration = microtime(true) - $startTime;
+                $errorMsg = "Invalid replacement at index {$index}. Each replacement must have 'search' and 'replace' keys.";
+                $this->createTaskAfterExecution('search_replace_in_file', $details, false, $errorMsg, $duration);
+                wp_send_json_error(array('message' => $errorMsg));
                 return;
             }
             
@@ -1490,15 +1642,20 @@ class Plugitify_Tools_API {
         }
         
         // Check if any changes were made
+        $duration = microtime(true) - $startTime;
         if ($content === $originalContent) {
-            wp_send_json_error(array('message' => "No replacements were made. None of the search patterns were found in the file."));
+            $errorMsg = "No replacements were made. None of the search patterns were found in the file.";
+            $this->createTaskAfterExecution('search_replace_in_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
         // Write back to file
         $result = file_put_contents($fullPath, $content);
         if ($result === false) {
-            wp_send_json_error(array('message' => "Failed to write to file: {$fullPath}"));
+            $errorMsg = "Failed to write to file: {$fullPath}";
+            $this->createTaskAfterExecution('search_replace_in_file', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -1518,6 +1675,7 @@ class Plugitify_Tools_API {
             }
         }
         
+        $this->createTaskAfterExecution('search_replace_in_file', $details, true, $message, $duration);
         wp_send_json_success(array('result' => $message));
     }
 
@@ -1525,28 +1683,35 @@ class Plugitify_Tools_API {
      * Handle update_chat_title tool
      */
     public function handle_update_chat_title() {
+        $startTime = microtime(true);
         $context = $this->validateRequest(); // Nonce verified in validateRequest()
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $title = isset($_POST['title']) ? sanitize_text_field(wp_unslash($_POST['title'])) : '';
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
         $chat_id = isset($_POST['chat_id']) ? intval($_POST['chat_id']) : 0;
         
+        $details = ['title' => $title, 'chat_id' => $chat_id];
+        
         if (empty($title)) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('update_chat_title', $details, false, 'Title is required', $duration);
             wp_send_json_error(array('message' => 'Title is required'));
             return;
         }
         
         if ($chat_id <= 0) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('update_chat_title', $details, false, 'Valid chat_id is required', $duration);
             wp_send_json_error(array('message' => 'Valid chat_id is required'));
             return;
         }
 
-        // Auto manage task/step
-        $this->autoManageTaskStep('update_chat_title', ['title' => $title, 'chat_id' => $chat_id]);
-
         // Check if table exists
         if (!\Plugitify_DB::tableExists('chat_history')) {
-            wp_send_json_error(array('message' => 'Database table does not exist'));
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'Database table does not exist';
+            $this->createTaskAfterExecution('update_chat_title', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
             return;
         }
         
@@ -1558,11 +1723,219 @@ class Plugitify_Tools_API {
             ->where('user_id', $user_id)
             ->update(array('title' => $title));
 
+        $duration = microtime(true) - $startTime;
         if ($updated) {
-            wp_send_json_success(array('result' => "Chat title updated successfully to: {$title}", 'title' => $title));
+            $result = "Chat title updated successfully to: {$title}";
+            $this->createTaskAfterExecution('update_chat_title', $details, true, $result, $duration);
+            wp_send_json_success(array('result' => $result, 'title' => $title));
         } else {
-            wp_send_json_error(array('message' => 'Failed to update chat title'));
+            $errorMsg = 'Failed to update chat title';
+            $this->createTaskAfterExecution('update_chat_title', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
         }
+    }
+
+    /**
+     * Handle get_chat_tasks tool
+     * Retrieves all tasks for a specific chat with optional progress tracking
+     */
+    public function handle_get_chat_tasks() {
+        $startTime = microtime(true);
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $chat_id = isset($_POST['chat_id']) ? intval($_POST['chat_id']) : 0;
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $track_progress = isset($_POST['track_progress']) ? filter_var(wp_unslash($_POST['track_progress']), FILTER_VALIDATE_BOOLEAN) : false;
+        
+        $details = ['chat_id' => $chat_id, 'track_progress' => $track_progress];
+        
+        if ($chat_id <= 0) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'Valid chat_id is required';
+            $this->createTaskAfterExecution('get_chat_tasks', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
+            return;
+        }
+
+        // Check if tables exist
+        if (!\Plugitify_DB::tableExists('tasks')) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'Tasks table does not exist';
+            $this->createTaskAfterExecution('get_chat_tasks', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
+            return;
+        }
+
+        $user_id = get_current_user_id();
+        
+        // Get all tasks for this chat
+        $tasks = \Plugitify_DB::table('tasks')
+            ->where('chat_history_id', $chat_id)
+            ->where('user_id', $user_id)
+            ->orderBy('created_at', 'DESC')
+            ->get();
+        
+        if (!$tasks) {
+            $tasks = [];
+        }
+        
+        // Convert to array if needed
+        if (is_object($tasks)) {
+            $tasks = [$tasks];
+        }
+        
+        $tasksData = [];
+        
+        foreach ($tasks as $task) {
+            $taskArray = is_object($task) ? (array)$task : $task;
+            
+            $taskData = [
+                'id' => $taskArray['id'] ?? null,
+                'task_name' => $taskArray['task_name'] ?? '',
+                'task_type' => $taskArray['task_type'] ?? null,
+                'description' => $taskArray['description'] ?? null,
+                'status' => $taskArray['status'] ?? 'pending',
+                'progress' => isset($taskArray['progress']) ? intval($taskArray['progress']) : 0,
+                'result' => $taskArray['result'] ?? null,
+                'error_message' => $taskArray['error_message'] ?? null,
+                'created_at' => $taskArray['created_at'] ?? null,
+                'updated_at' => $taskArray['updated_at'] ?? null,
+            ];
+            
+            // If track_progress is true, get steps for this task
+            if ($track_progress && \Plugitify_DB::tableExists('steps')) {
+                $taskId = $taskArray['id'] ?? null;
+                if ($taskId) {
+                    $steps = \Plugitify_DB::table('steps')
+                        ->where('task_id', $taskId)
+                        ->orderBy('order', 'ASC')
+                        ->orderBy('created_at', 'ASC')
+                        ->get();
+                    
+                    if (!$steps) {
+                        $steps = [];
+                    }
+                    
+                    // Convert to array if needed
+                    if (is_object($steps) && !is_array($steps)) {
+                        $steps = [$steps];
+                    }
+                    
+                    $stepsData = [];
+                    foreach ($steps as $step) {
+                        $stepArray = is_object($step) ? (array)$step : $step;
+                        $stepsData[] = [
+                            'id' => $stepArray['id'] ?? null,
+                            'step_name' => $stepArray['step_name'] ?? '',
+                            'step_type' => $stepArray['step_type'] ?? null,
+                            'order' => isset($stepArray['order']) ? intval($stepArray['order']) : 0,
+                            'status' => $stepArray['status'] ?? 'pending',
+                            'content' => $stepArray['content'] ?? null,
+                            'result' => $stepArray['result'] ?? null,
+                            'error_message' => $stepArray['error_message'] ?? null,
+                            'duration' => isset($stepArray['duration']) ? intval($stepArray['duration']) : 0,
+                            'created_at' => $stepArray['created_at'] ?? null,
+                            'updated_at' => $stepArray['updated_at'] ?? null,
+                        ];
+                    }
+                    
+                    $taskData['steps'] = $stepsData;
+                    $taskData['steps_count'] = count($stepsData);
+                } else {
+                    $taskData['steps'] = [];
+                    $taskData['steps_count'] = 0;
+                }
+            } else {
+                $taskData['steps'] = [];
+                $taskData['steps_count'] = 0;
+            }
+            
+            $tasksData[] = $taskData;
+        }
+        
+        // Build result message
+        $totalTasks = count($tasksData);
+        $completedTasks = count(array_filter($tasksData, function($t) { return $t['status'] === 'completed'; }));
+        $inProgressTasks = count(array_filter($tasksData, function($t) { return $t['status'] === 'in_progress'; }));
+        $failedTasks = count(array_filter($tasksData, function($t) { return $t['status'] === 'failed'; }));
+        $pendingTasks = count(array_filter($tasksData, function($t) { return $t['status'] === 'pending'; }));
+        
+        $result = "Found {$totalTasks} task(s) for chat #{$chat_id}:\n\n";
+        $result .= "Summary:\n";
+        $result .= "  • Total: {$totalTasks}\n";
+        $result .= "  • Completed: {$completedTasks}\n";
+        $result .= "  • In Progress: {$inProgressTasks}\n";
+        $result .= "  • Pending: {$pendingTasks}\n";
+        $result .= "  • Failed: {$failedTasks}\n\n";
+        
+        if ($track_progress) {
+            $result .= "Detailed Task List (with progress tracking):\n";
+            $result .= str_repeat("=", 80) . "\n\n";
+            
+            foreach ($tasksData as $index => $task) {
+                $taskNum = $index + 1;
+                $result .= "Task #{$taskNum}: {$task['task_name']}\n";
+                $result .= "  Status: {$task['status']}\n";
+                $result .= "  Progress: {$task['progress']}%\n";
+                
+                if ($task['description']) {
+                    $result .= "  Description: {$task['description']}\n";
+                }
+                
+                if ($task['steps_count'] > 0) {
+                    $result .= "  Steps ({$task['steps_count']}):\n";
+                    foreach ($task['steps'] as $stepIndex => $step) {
+                        $stepNum = $stepIndex + 1;
+                        $statusIcon = $step['status'] === 'completed' ? '✅' : ($step['status'] === 'failed' ? '❌' : ($step['status'] === 'in_progress' ? '🔄' : '⏳'));
+                        $result .= "    {$stepNum}. {$statusIcon} {$step['step_name']} [{$step['status']}]\n";
+                        if ($step['result']) {
+                            $resultPreview = strlen($step['result']) > 100 ? substr($step['result'], 0, 100) . '...' : $step['result'];
+                            $result .= "       Result: {$resultPreview}\n";
+                        }
+                        if ($step['error_message']) {
+                            $errorPreview = strlen($step['error_message']) > 100 ? substr($step['error_message'], 0, 100) . '...' : $step['error_message'];
+                            $result .= "       Error: {$errorPreview}\n";
+                        }
+                    }
+                }
+                
+                if ($task['result']) {
+                    $resultPreview = strlen($task['result']) > 200 ? substr($task['result'], 0, 200) . '...' : $task['result'];
+                    $result .= "  Result: {$resultPreview}\n";
+                }
+                
+                if ($task['error_message']) {
+                    $errorPreview = strlen($task['error_message']) > 200 ? substr($task['error_message'], 0, 200) . '...' : $task['error_message'];
+                    $result .= "  Error: {$errorPreview}\n";
+                }
+                
+                $result .= "\n";
+            }
+        } else {
+            $result .= "Task List:\n";
+            $result .= str_repeat("=", 80) . "\n\n";
+            
+            foreach ($tasksData as $index => $task) {
+                $taskNum = $index + 1;
+                $statusIcon = $task['status'] === 'completed' ? '✅' : ($task['status'] === 'failed' ? '❌' : ($task['status'] === 'in_progress' ? '🔄' : '⏳'));
+                $result .= "{$taskNum}. {$statusIcon} {$task['task_name']} [{$task['status']}] - Progress: {$task['progress']}%\n";
+            }
+        }
+        
+        $duration = microtime(true) - $startTime;
+        $this->createTaskAfterExecution('get_chat_tasks', $details, true, $result, $duration);
+        wp_send_json_success(array(
+            'result' => $result,
+            'tasks' => $tasksData,
+            'summary' => [
+                'total' => $totalTasks,
+                'completed' => $completedTasks,
+                'in_progress' => $inProgressTasks,
+                'pending' => $pendingTasks,
+                'failed' => $failedTasks
+            ],
+            'track_progress' => $track_progress
+        ));
     }
 }
 

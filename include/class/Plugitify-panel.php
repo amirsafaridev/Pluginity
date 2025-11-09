@@ -6,6 +6,7 @@ class Plugitify_Panel {
         add_filter('pre_handle_404', array($this, 'prevent_404'), 10, 2);
         add_filter('template_include', array($this, 'template_include'));
         add_action('wp_ajax_plugitify_send_message', array($this, 'handle_send_message'));
+        add_action('wp_ajax_plugitify_update_message', array($this, 'handle_update_message'));
         add_action('wp_ajax_plugitify_get_chats', array($this, 'handle_get_chats'));
         add_action('wp_ajax_plugitify_save_chat', array($this, 'handle_save_chat'));
         add_action('wp_ajax_plugitify_delete_chat', array($this, 'handle_delete_chat'));
@@ -84,8 +85,10 @@ class Plugitify_Panel {
         $message = isset($_POST['message']) ? sanitize_textarea_field(wp_unslash($_POST['message'])) : '';
         $chat_id = isset($_POST['chat_id']) ? intval($_POST['chat_id']) : 0;
         $role = isset($_POST['role']) ? sanitize_text_field(wp_unslash($_POST['role'])) : 'user'; // Allow 'user' or 'assistant'
+        $status = isset($_POST['status']) ? sanitize_text_field(wp_unslash($_POST['status'])) : null; // Allow 'pending' or 'completed'
 
-        if (empty($message)) {
+        // Allow empty message only for assistant role (for pending messages)
+        if (empty($message) && $role !== 'assistant') {
             wp_send_json_error(array('message' => 'Message is required'));
             return;
         }
@@ -96,12 +99,33 @@ class Plugitify_Panel {
             
             // Save message to database (can be user or assistant message)
             $user_message_timestamp = null;
+            $message_id = null;
             if ($chat_id > 0) {
-                $inserted = \Plugitify_DB::table('messages')->insert(array(
+                $insert_data = array(
                     'chat_history_id' => $chat_id,
                     'role' => $role, // 'user' or 'assistant'
                     'content' => $message
-                ));
+                );
+                
+                // Add status if provided
+                if ($status !== null) {
+                    $insert_data['status'] = $status;
+                }
+                
+                $inserted = \Plugitify_DB::table('messages')->insert($insert_data);
+                
+                // Get the inserted message ID
+                if ($inserted) {
+                    $inserted_msg = \Plugitify_DB::table('messages')
+                        ->where('chat_history_id', $chat_id)
+                        ->where('role', $role)
+                        ->orderBy('created_at', 'DESC')
+                        ->first();
+                    
+                    if ($inserted_msg) {
+                        $message_id = is_object($inserted_msg) ? ($inserted_msg->id ?? null) : ($inserted_msg['id'] ?? null);
+                    }
+                }
                 
                 // Get the timestamp of the inserted message to use as last_update (only for user messages)
                 if ($inserted && $role === 'user') {
@@ -124,6 +148,7 @@ class Plugitify_Panel {
                 'processing' => true,
                 'chat_id' => $chat_id,
                 'message' => 'Message received',
+                'message_id' => $message_id, // Return message ID for updates
                 'user_message_timestamp' => $user_message_timestamp // Return timestamp for frontend to use as last_update
             ));
         } catch (\Exception $e) {
@@ -149,6 +174,96 @@ class Plugitify_Panel {
             wp_send_json_error(array(
                 'message' => 'Error processing message: ' . $e->getMessage()
             ));
+        }
+    }
+
+    /**
+     * Handle AJAX request for updating a message
+     */
+    public function handle_update_message() {
+        // Verify nonce
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Nonce is verified, not sanitized
+        if (!isset($_POST['nonce']) || !wp_verify_nonce(wp_unslash($_POST['nonce']), 'plugitify_chat_nonce')) {
+            wp_send_json_error(array('message' => 'Invalid nonce'));
+            return;
+        }
+
+        // Check user permissions
+        if (!is_user_logged_in() || !current_user_can('manage_options')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+            return;
+        }
+
+        // Get parameters
+        $message_id = isset($_POST['message_id']) ? intval($_POST['message_id']) : 0;
+        $content = isset($_POST['content']) ? sanitize_textarea_field(wp_unslash($_POST['content'])) : null;
+        $status = isset($_POST['status']) ? sanitize_text_field(wp_unslash($_POST['status'])) : null;
+
+        if ($message_id <= 0) {
+            wp_send_json_error(array('message' => 'Invalid message ID'));
+            return;
+        }
+
+        if ($content === null && $status === null) {
+            wp_send_json_error(array('message' => 'Content or status must be provided'));
+            return;
+        }
+
+        try {
+            $user_id = get_current_user_id();
+            
+            // Verify message exists and belongs to user's chat
+            $message = \Plugitify_DB::table('messages')
+                ->where('id', $message_id)
+                ->first();
+            
+            if (!$message) {
+                wp_send_json_error(array('message' => 'Message not found'));
+                return;
+            }
+            
+            $chat_id = is_object($message) ? ($message->chat_history_id ?? null) : ($message['chat_history_id'] ?? null);
+            
+            // Verify chat belongs to user
+            if ($chat_id) {
+                $chat = \Plugitify_DB::table('chat_history')
+                    ->where('id', $chat_id)
+                    ->where('user_id', $user_id)
+                    ->first();
+                
+                if (!$chat) {
+                    wp_send_json_error(array('message' => 'Unauthorized'));
+                    return;
+                }
+            }
+            
+            // Prepare update data
+            $update_data = array();
+            if ($content !== null) {
+                $update_data['content'] = $content;
+            }
+            if ($status !== null) {
+                $update_data['status'] = $status;
+            }
+            
+            // Always update updated_at timestamp
+            $update_data['updated_at'] = current_time('mysql');
+            
+            // Update message
+            $updated = \Plugitify_DB::table('messages')
+                ->where('id', $message_id)
+                ->update($update_data);
+            
+            if ($updated) {
+                wp_send_json_success(array(
+                    'message' => 'Message updated',
+                    'message_id' => $message_id
+                ));
+            } else {
+                wp_send_json_error(array('message' => 'Failed to update message'));
+            }
+        } catch (\Exception $e) {
+            wp_send_json_error(array('message' => 'Error updating message: ' . $e->getMessage()));
         }
     }
 
@@ -479,12 +594,51 @@ class Plugitify_Panel {
             $messages_array = array();
             if ($messages) {
                 foreach ($messages as $msg) {
-                    $messages_array[] = array(
-                        'id' => intval($msg->id),
+                    $message_id = intval($msg->id);
+                    $message_data = array(
+                        'id' => $message_id,
                         'role' => $msg->role,
                         'content' => $msg->content,
                         'timestamp' => $msg->created_at
                     );
+                    
+                    // Get tasks for this message if it's a bot message
+                    if ($msg->role === 'assistant' || $msg->role === 'bot') {
+                        if (\Plugitify_DB::tableExists('tasks')) {
+                            $tasks = \Plugitify_DB::table('tasks')
+                                ->where('message_id', $message_id)
+                                ->where('user_id', $user_id)
+                                ->orderBy('created_at', 'ASC')
+                                ->get();
+                            
+                            if ($tasks) {
+                                // Convert to array if needed
+                                if (is_object($tasks) && !is_array($tasks)) {
+                                    $tasks = [$tasks];
+                                }
+                                
+                                $tasks_array = array();
+                                foreach ($tasks as $task) {
+                                    $taskArray = is_object($task) ? (array)$task : $task;
+                                    $tasks_array[] = array(
+                                        'id' => $taskArray['id'] ?? null,
+                                        'taskName' => $taskArray['task_name'] ?? 'Untitled Task',
+                                        'status' => $taskArray['status'] ?? 'pending',
+                                        'progress' => isset($taskArray['progress']) ? intval($taskArray['progress']) : 0,
+                                        'description' => $taskArray['description'] ?? null,
+                                        'created_at' => $taskArray['created_at'] ?? null
+                                    );
+                                }
+                                $message_data['tasks'] = $tasks_array;
+                            } else {
+                                $message_data['tasks'] = array();
+                            }
+                        } else {
+                            $message_data['tasks'] = array();
+                        }
+                    }
+                    
+                    $messages_array[] = $message_data;
                 }
             }
 

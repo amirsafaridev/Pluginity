@@ -11,6 +11,7 @@ class Plugitify_CreateTasksTable {
         return Plugitify_DB::schema()->create('tasks', function($table) {
             $table->id();
             $table->bigInteger('chat_history_id')->unsigned()->nullable(); // ID چت مربوطه (اختیاری)
+            $table->bigInteger('message_id')->unsigned()->nullable(); // ID پیام مربوطه (اختیاری)
             $table->bigInteger('user_id')->unsigned(); // ادمین که تسک را ایجاد کرده
             $table->string('task_name', 255); // نام تسک
             $table->string('task_type', 100)->nullable(); // نوع تسک (plugin_creation, code_generation, etc.)

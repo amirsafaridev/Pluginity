@@ -1200,13 +1200,15 @@ ai-tasklist__icon--failed{
 	gap: 12px;
 	padding: 10px 14px;
 	margin: 0 auto 12px auto;
-	width: 90%;
+	width: 25% !important;
 	background: rgba(239, 68, 68, 0.08);
 	border: 1px solid rgba(239, 68, 68, 0.2);
 	border-radius: 8px;
 	backdrop-filter: blur(4px);
 	animation: errorSlideIn 0.3s ease-out;
 	box-shadow: 0 2px 8px rgba(239, 68, 68, 0.1);
+	letter-spacing: 1px;
+	line-height: 13px !important;
 }
 
 @keyframes errorSlideIn {

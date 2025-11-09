@@ -153,10 +153,12 @@ createApp({
                 
                 if (response.success && response.data.messages) {
                     this.currentMessages = response.data.messages.map(msg => ({
-                        id: msg.id,
-                        role: msg.role,
+                        id: msg.role === 'bot' || msg.role === 'assistant' ? 'bot_' + msg.id : 'user_' + msg.id,
+                        role: msg.role === 'assistant' ? 'bot' : msg.role,
                         content: msg.content,
-                        timestamp: new Date(msg.timestamp)
+                        timestamp: new Date(msg.timestamp),
+                        dbMessageId: msg.id, // Store database message ID for updates
+                        tasks: msg.tasks || [] // Attach tasks from database to each message
                     }));
                     
                     // Sort messages by timestamp (oldest first) to ensure correct order
@@ -466,6 +468,15 @@ createApp({
                 return result;
             });
             
+            const getChatTasksTool = new Tool('get_chat_tasks', 'Get all tasks for the current chat with detailed progress tracking. This tool automatically retrieves all tasks for the current chat and shows their status, progress, and all steps that have been executed. IMPORTANT: Always check tasks BEFORE starting any new work or action. This helps you understand what has been done previously, avoid duplicate work, and ensure continuity. Use this tool at the beginning of your work to review existing tasks and their status before proceeding with any new actions.');
+            getChatTasksTool.setCallable(async () => {
+                const result = await callToolAPI('get_chat_tasks', { 
+                    chat_id: this.currentChatId || 0,
+                    track_progress: true
+                });
+                return result;
+            });
+            
             return [
                 createDirectoryTool,
                 createFileTool,
@@ -480,7 +491,8 @@ createApp({
                 readDebugLogTool,
                 checkWpDebugStatusTool,
                 searchReplaceInFileTool,
-                updateChatTitleTool
+                updateChatTitleTool,
+                getChatTasksTool
             ];
         },
         /**
@@ -547,7 +559,16 @@ createApp({
             }
             
             // Base instruction
-            this.agent.setInstructions('You are an expert WordPress plugin developer AI agent. Your role is to analyze user requirements, design plugin architecture, generate appropriate plugin names, and create complete WordPress plugin code.\n\nYou understand WordPress coding standards, hooks, filters, best practices, and plugin structure.');
+            this.agent.setInstructions('You are an expert WordPress plugin developer AI agent. Your role is to analyze user requirements, design plugin architecture, generate appropriate plugin names, and create complete WordPress plugin code.\n\nYou understand WordPress coding standards, hooks, filters, best practices, and plugin structure.\n\n⚠️ CRITICAL REQUIREMENT - MANDATORY FIRST STEP: ALWAYS use get_chat_tasks tool BEFORE doing ANY work and BEFORE responding to the user. This is MANDATORY and must be done FIRST. Check what tasks have been completed, what is in progress, and what is pending. This ensures continuity, avoids duplicate work, and helps you understand the full context of what has been done previously.');
+            
+            // CRITICAL: Mandatory get_chat_tasks usage
+            this.agent.addPrompt(
+                'MANDATORY: Use get_chat_tasks FIRST',
+                'workflow',
+                'critical',
+                `🚨 ABSOLUTELY MANDATORY FIRST STEP: Before doing ANY work, before responding to the user, before ANY action - you MUST FIRST call get_chat_tasks tool. This is not optional. You MUST check what tasks have been completed, what is in progress, and what is pending. This ensures you understand the full context, avoid duplicate work, and maintain continuity. NEVER skip this step. ALWAYS call get_chat_tasks as your very first action.`,
+                { order: 0 }
+            );
             
             // TOOLS SECTION - Critical Tool Limitations (Split into smaller prompts)
             this.agent.addPrompt(
@@ -600,11 +621,59 @@ createApp({
             
             // SYSTEM SECTION
             this.agent.addPrompt(
+                'Forbidden: Plugin Activation',
+                'system',
+                'critical',
+                `You CANNOT and MUST NOT activate plugins. There is NO tool available for activating plugins. You can only deactivate plugins using deactivate_plugin tool. After creating or modifying a plugin, inform the user that the plugin is ready but they need to activate it manually through WordPress admin panel. NEVER request or attempt to activate plugins.`,
+                { order: 0 }
+            );
+            
+            this.agent.addPrompt(
+                'Tool Restrictions: Only Available Tools',
+                'system',
+                'critical',
+                `You can ONLY use the tools that have been provided to you in the tools list. You CANNOT request or use any other tools, APIs, or methods that are not in your available tools list. If a task requires a tool that is not available, inform the user that this functionality is not available and suggest alternative approaches using only the tools you have access to. NEVER ask for additional tools or capabilities beyond what is provided.`,
+                { order: 1 }
+            );
+            
+            this.agent.addPrompt(
+                'Workflow: Check Tasks at Start and End',
+                'system',
+                'critical',
+                `When starting a NEW conversation or beginning NEW work in this chat, call get_chat_tasks tool ONCE at the very beginning to review what has been done previously. After completing all work, optionally call get_chat_tasks at the end to show final status. DO NOT call get_chat_tasks repeatedly for every tool call or action - only check tasks at the START of new work and optionally at the END. During normal tool execution, focus on the work itself without checking tasks.`,
+                { order: 2 }
+            );
+            
+            this.agent.addPrompt(
+                'Plugin Status Check: Always Verify Before Editing',
+                'system',
+                'critical',
+                `Before editing, modifying, or deleting files of an existing plugin, you MUST first check if the plugin is active using list_plugins tool. If the plugin is active, you MUST deactivate it first using deactivate_plugin tool before making any changes. Never edit active plugin files directly - always deactivate first, then edit, then inform user they can reactivate manually.`,
+                { order: 3 }
+            );
+            
+            this.agent.addPrompt(
+                'Plugin Status: Always Check Before Informing User',
+                'system',
+                'critical',
+                `NEVER tell the user that a plugin is active or inactive without first checking its status using list_plugins tool. You MUST always verify the actual plugin status by calling list_plugins BEFORE making any statement about whether a plugin is active or not. DO NOT rely on information from previous messages or chat history - plugin status can change, so you MUST check the current status every time using list_plugins. Do not assume, guess, or use old information - always check first with list_plugins, then inform the user based on the actual current status you just verified.`,
+                { order: 4 }
+            );
+            
+            this.agent.addPrompt(
+                'Plugin Status Check: Use list_plugins Tool',
+                'system',
+                'critical',
+                `To check if a plugin is active or inactive, you MUST use the list_plugins tool. This is the ONLY way to verify plugin activation status. When you need to know whether a plugin is active or not, call list_plugins tool first, then check the status field in the results. Do not guess or assume - always use list_plugins tool to get the current status.`,
+                { order: 4.5 }
+            );
+            
+            this.agent.addPrompt(
                 'Workflow: Confirm Scenario Before Starting',
                 'system',
                 'critical',
                 `Before starting any work (creating plugins, editing plugins, making changes): First, provide a brief summary of the scenario/plan to the user and ask for confirmation. Wait for user approval before proceeding with tool calls. Only ask questions if information is truly needed to proceed - don't ask unnecessary questions. If all required information is clear, proceed with confirmation request.`,
-                { order: 0 }
+                { order: 5 }
             );
             
             this.agent.addPrompt(
@@ -993,6 +1062,22 @@ createApp({
                 console.error('Error saving user message:', e);
             }
             
+            // Create bot message in database immediately with status "pending"
+            let botMessageId = null;
+            try {
+                const botMessageResponse = await this.callAPI('plugitify_send_message', {
+                    message: '',
+                    chat_id: this.currentChatId,
+                    role: 'assistant',
+                    status: 'pending'
+                });
+                if (botMessageResponse && botMessageResponse.data && botMessageResponse.data.message_id) {
+                    botMessageId = botMessageResponse.data.message_id;
+                }
+            } catch (e) {
+                console.error('Error creating bot message in database:', e);
+            }
+            
             // Note: Chat title will be updated by AI using update_chat_title tool if title is "New Chat"
             
             // Show typing indicator
@@ -1080,7 +1165,8 @@ createApp({
                     timestamp: new Date(),
                     isStreaming: true,
                     tasks: [],
-                    taskCountBefore: taskCountBefore // Track task count before this message
+                    taskCountBefore: taskCountBefore, // Track task count before this message
+                    dbMessageId: botMessageId // Store database message ID for updates
                 };
                 this.addMessage(botMessage);
                 const botMessageIndex = this.currentMessages.findIndex(m => m.id === botMessage.id);
@@ -1088,6 +1174,51 @@ createApp({
                 // Stream agent execution
                 let fullOutput = '';
                 let accumulatedContent = '';
+                
+                // Debounce function for updating message in database
+                let updateTimeout = null;
+                let lastUpdateTime = 0;
+                const updateMessageInDB = (content, status = null, immediate = false) => {
+                    if (!botMessageId) return;
+                    
+                    const now = Date.now();
+                    const timeSinceLastUpdate = now - lastUpdateTime;
+                    
+                    // If immediate flag is set or it's been more than 300ms since last update, update immediately
+                    if (immediate || timeSinceLastUpdate >= 300) {
+                        clearTimeout(updateTimeout);
+                        updateTimeout = null;
+                        lastUpdateTime = now;
+                        
+                        // Update immediately
+                        (async () => {
+                            try {
+                                const updateData = { message_id: botMessageId, content: content };
+                                if (status !== null) {
+                                    updateData.status = status;
+                                }
+                                await this.callAPI('plugitify_update_message', updateData);
+                            } catch (e) {
+                                console.error('Error updating bot message in database:', e);
+                            }
+                        })();
+                    } else {
+                        // Debounce for frequent updates
+                        clearTimeout(updateTimeout);
+                        updateTimeout = setTimeout(async () => {
+                            try {
+                                const updateData = { message_id: botMessageId, content: content };
+                                if (status !== null) {
+                                    updateData.status = status;
+                                }
+                                await this.callAPI('plugitify_update_message', updateData);
+                                lastUpdateTime = Date.now();
+                            } catch (e) {
+                                console.error('Error updating bot message in database:', e);
+                            }
+                        }, 300); // Update every 300ms during streaming
+                    }
+                };
                 
                 try {
                     // Create user message
@@ -1112,13 +1243,15 @@ createApp({
                             continue;
                         }
                         
-                        // Handle content
+                        // Handle content (only the displayed content, not tool parameters)
                         if (chunk.content) {
                             accumulatedContent += chunk.content;
                             fullOutput = accumulatedContent;
                             if (botMessageIndex >= 0) {
                                 this.currentMessages[botMessageIndex].content = fullOutput;
                             }
+                            // Update message in database with current content (debounced)
+                            updateMessageInDB(fullOutput);
                             this.$forceUpdate();
                             this.$nextTick(() => {
                                 this.scrollToBottom();
@@ -1189,7 +1322,7 @@ createApp({
                                         const allTasks = this.taskManager.getTasks(this.currentChatId);
                                         const remainingTasks = allTasks.slice(0, botMessage.taskCountBefore || 0);
                                         this.taskManager.saveTasks(this.currentChatId, remainingTasks);
-                                    }, 1500); // Wait for animation to complete (400ms) + show completed (1100ms)
+                                    }, 1500);
                                 } else if (activeTasks.length === 0 && messageTasks.length === 0) {
                                     // No tasks at all for this message, clear interval immediately
                                     clearInterval(checkTasksInterval);
@@ -1202,19 +1335,31 @@ createApp({
                         }, 300); // Check every 300ms for faster updates
                     }
                     
-                    // Save bot message to database
-                    try {
-                        await this.callAPI('plugitify_send_message', {
-                            message: fullOutput || accumulatedContent || 'Response received',
-                            chat_id: this.currentChatId,
-                            role: 'assistant'
-                        });
-                    } catch (e) {
-                        console.error('Error saving bot message:', e);
+                    // Clear any pending update timeout and save final message with status "completed"
+                    clearTimeout(updateTimeout);
+                    updateTimeout = null;
+                    
+                    // Final update with completed status - ensure it happens immediately
+                    const finalContent = fullOutput || accumulatedContent || 'Response received';
+                    if (botMessageId) {
+                        try {
+                            // Update immediately without debounce
+                            await this.callAPI('plugitify_update_message', {
+                                message_id: botMessageId,
+                                content: finalContent,
+                                status: 'completed'
+                            });
+                            console.log('Bot message updated to completed in database');
+                        } catch (e) {
+                            console.error('Error updating bot message to completed:', e);
+                        }
                     }
                     
                 } catch (streamError) {
                     console.error('Streaming error:', streamError);
+                    // Clear any pending update timeout
+                    clearTimeout(updateTimeout);
+                    
                     // Fallback to regular chat if streaming fails
                     const userMsg = new UserMessage(messageContent);
                     const response = await this.agent.chat([...chatHistory, userMsg]);
@@ -1225,14 +1370,29 @@ createApp({
                         this.currentMessages[botMessageIndex].isStreaming = false;
                     }
                     
-                    try {
-                        await this.callAPI('plugitify_send_message', {
-                            message: fullOutput,
-                            chat_id: this.currentChatId,
-                            role: 'assistant'
-                        });
-                    } catch (e) {
-                        console.error('Error saving bot message:', e);
+                    // Update message in database with final content and status "completed"
+                    if (botMessageId) {
+                        try {
+                            await this.callAPI('plugitify_update_message', {
+                                message_id: botMessageId,
+                                content: fullOutput,
+                                status: 'completed'
+                            });
+                        } catch (e) {
+                            console.error('Error updating bot message to completed:', e);
+                        }
+                    } else {
+                        // If bot message wasn't created, create it now
+                        try {
+                            await this.callAPI('plugitify_send_message', {
+                                message: fullOutput,
+                                chat_id: this.currentChatId,
+                                role: 'assistant',
+                                status: 'completed'
+                            });
+                        } catch (e) {
+                            console.error('Error saving bot message:', e);
+                        }
                     }
                 }
                 
@@ -1501,11 +1661,311 @@ createApp({
             // Clear error message
             this.errorMessage = null;
             
-            // Set the message input to the last user message
-            this.messageInput = this.lastUserMessage;
+            // Find the last incomplete bot message (if exists)
+            // Look for bot messages that are either streaming or have no/empty content
+            const botMessages = this.currentMessages.filter(m => m.role === 'bot' && !m.isTyping);
+            const lastBotMessage = botMessages.length > 0 ? botMessages[botMessages.length - 1] : null;
             
-            // Trigger send message
-            await this.sendMessage();
+            const hasIncompleteBotMessage = lastBotMessage && 
+                (lastBotMessage.isStreaming || 
+                 !lastBotMessage.content || 
+                 lastBotMessage.content.trim() === '');
+            
+            // If there's an incomplete bot message, continue from there
+            if (hasIncompleteBotMessage) {
+                // Continue the existing bot message
+                await this.continueMessage(lastBotMessage);
+            } else {
+                // No incomplete message, retry from scratch
+                this.messageInput = this.lastUserMessage;
+                await this.sendMessage();
+            }
+        },
+        async continueMessage(botMessage) {
+            if (this.isLoading) return;
+            
+            this.isLoading = true;
+            
+            // Find the user message that corresponds to this bot message
+            // It should be the last user message before this bot message
+            const botMessageIndex = this.currentMessages.findIndex(m => m.id === botMessage.id);
+            let lastUserMsg = null;
+            
+            // Find the last user message before this bot message
+            for (let i = botMessageIndex - 1; i >= 0; i--) {
+                if (this.currentMessages[i].role === 'user') {
+                    lastUserMsg = this.currentMessages[i];
+                    break;
+                }
+            }
+            
+            // Fallback: use lastUserMessage if we can't find the corresponding user message
+            if (!lastUserMsg) {
+                this.messageInput = this.lastUserMessage;
+                this.isLoading = false;
+                await this.sendMessage();
+                return;
+            }
+            
+            const messageContent = lastUserMsg.content;
+            const existingContent = botMessage.content || '';
+            
+            try {
+                // Initialize agent if not already done
+                if (!this.agentInitialized) {
+                    await this.initializeAgent();
+                }
+                
+                // Update agent chat ID if changed
+                if (this.agent && this.currentChatId) {
+                    this.agent.setChatId(this.currentChatId);
+                }
+                
+                // Import Agent Framework message classes
+                const agentModule = await import(this.agentUrl);
+                const { UserMessage, AssistantMessage } = agentModule;
+                
+                // Build chat history from current messages (excluding incomplete bot message)
+                const chatHistory = [];
+                for (const msg of this.currentMessages) {
+                    if (msg.isTyping) continue;
+                    // Exclude the incomplete bot message we're continuing
+                    if (msg.id === botMessage.id) continue;
+                    // Only include messages with content (skip empty messages)
+                    if (!msg.content || msg.content.trim() === '') continue;
+                    
+                    if (msg.role === 'user') {
+                        chatHistory.push(new UserMessage(msg.content));
+                    } else if (msg.role === 'bot' || msg.role === 'assistant') {
+                        chatHistory.push(new AssistantMessage(msg.content));
+                    }
+                }
+                
+                // Check if this is the first user message
+                const isFirstUserMessage = chatHistory.filter(m => m instanceof UserMessage).length === 0;
+                
+                // Update chat title rule dynamically
+                this.updateChatTitleRule(isFirstUserMessage);
+                
+                // Sync agent's chat history
+                const agentChatHistory = this.agent.resolveChatHistory();
+                if (chatHistory.length > 0) {
+                    agentChatHistory.clear();
+                    for (const msg of chatHistory) {
+                        agentChatHistory.addMessage(msg);
+                    }
+                }
+                
+                // Update bot message to show it's continuing
+                if (botMessageIndex >= 0) {
+                    this.currentMessages[botMessageIndex].isStreaming = true;
+                    this.currentMessages[botMessageIndex].content = existingContent; // Keep existing content
+                }
+                
+                // Stream agent execution
+                let fullOutput = existingContent; // Start with existing content
+                let accumulatedContent = existingContent;
+                
+                // Get bot message ID from database if available
+                const botMessageId = botMessage.dbMessageId || null;
+                
+                // Debounce function for updating message in database
+                let updateTimeout = null;
+                const updateMessageInDB = (content, status = null) => {
+                    if (!botMessageId) return;
+                    
+                    clearTimeout(updateTimeout);
+                    updateTimeout = setTimeout(async () => {
+                        try {
+                            const updateData = { message_id: botMessageId, content: content };
+                            if (status !== null) {
+                                updateData.status = status;
+                            }
+                            await this.callAPI('plugitify_update_message', updateData);
+                        } catch (e) {
+                            console.error('Error updating bot message in database:', e);
+                        }
+                    }, 500); // Update every 500ms during streaming
+                };
+                
+                try {
+                    // Create user message
+                    const userMsg = new UserMessage(messageContent);
+                    
+                    // Stream the response - agent will use its internal chat history + new user message
+                    const stream = this.agent.stream([userMsg]);
+                    
+                    for await (const chunk of stream) {
+                        // Handle tool calls
+                        if (chunk.tools && chunk.tools.length > 0) {
+                            const toolName = chunk.tools[0].name || 'unknown';
+                            if (botMessageIndex >= 0) {
+                                this.currentMessages[botMessageIndex].content = accumulatedContent;
+                            }
+                            this.$forceUpdate();
+                            this.$nextTick(() => {
+                                this.scrollToBottom();
+                            });
+                            continue;
+                        }
+                        
+                        // Handle content - append to existing content (only the displayed content, not tool parameters)
+                        if (chunk.content) {
+                            accumulatedContent += chunk.content;
+                            fullOutput = accumulatedContent;
+                            if (botMessageIndex >= 0) {
+                                this.currentMessages[botMessageIndex].content = fullOutput;
+                            }
+                            // Update message in database with current content (debounced)
+                            updateMessageInDB(fullOutput);
+                            this.$forceUpdate();
+                            this.$nextTick(() => {
+                                this.scrollToBottom();
+                            });
+                        }
+                        
+                        // Handle usage
+                        if (chunk.usage) {
+                            console.log('Usage:', chunk.usage);
+                        }
+                    }
+                    
+                    // Final update
+                    if (botMessageIndex >= 0) {
+                        this.currentMessages[botMessageIndex].content = fullOutput || accumulatedContent || 'Response received';
+                        this.currentMessages[botMessageIndex].isStreaming = false;
+                        
+                        // Get only tasks created after this message and attach to message
+                        if (this.taskManager && this.currentChatId) {
+                            const messageTasks = this.getActiveTasksForMessage(botMessage.id);
+                            this.updateMessageTasks(botMessage.id, messageTasks);
+                        }
+                        
+                        // Keep checking for tasks and update UI until all are completed
+                        const checkTasksInterval = setInterval(() => {
+                            if (this.taskManager && this.currentChatId) {
+                                const messageTasks = this.getActiveTasksForMessage(botMessage.id);
+                                const activeTasks = messageTasks.filter(t => t.status === 'in_progress' || t.status === 'needs_recovery');
+                                
+                                // Convert needs_recovery to failed if they've been sitting too long
+                                let needsSave = false;
+                                messageTasks.forEach(task => {
+                                    if (task.status === 'needs_recovery') {
+                                        task.status = 'failed';
+                                        task.steps.forEach(step => {
+                                            if (step.status === 'needs_recovery') {
+                                                step.status = 'failed';
+                                            }
+                                        });
+                                        needsSave = true;
+                                    }
+                                });
+                                
+                                if (needsSave && this.taskManager) {
+                                    const allTasks = this.taskManager.getTasks(this.currentChatId);
+                                    this.taskManager.saveTasks(this.currentChatId, allTasks);
+                                }
+                                
+                                this.updateMessageTasks(botMessage.id, messageTasks);
+                                
+                                const stillActiveTasks = messageTasks.filter(t => t.status === 'in_progress');
+                                
+                                if (stillActiveTasks.length === 0 && messageTasks.length > 0) {
+                                    clearInterval(checkTasksInterval);
+                                    
+                                    setTimeout(() => {
+                                        this.updateMessageTasks(botMessage.id, []);
+                                        
+                                        const allTasks = this.taskManager.getTasks(this.currentChatId);
+                                        const remainingTasks = allTasks.slice(0, botMessage.taskCountBefore || 0);
+                                        this.taskManager.saveTasks(this.currentChatId, remainingTasks);
+                                    }, 1500);
+                                } else if (activeTasks.length === 0 && messageTasks.length === 0) {
+                                    clearInterval(checkTasksInterval);
+                                    this.updateMessageTasks(botMessage.id, []);
+                                }
+                            } else {
+                                clearInterval(checkTasksInterval);
+                            }
+                        }, 300);
+                    }
+                    
+                    // Clear any pending update timeout and save final message with status "completed"
+                    clearTimeout(updateTimeout);
+                    if (botMessageId) {
+                        try {
+                            await this.callAPI('plugitify_update_message', {
+                                message_id: botMessageId,
+                                content: fullOutput || accumulatedContent || 'Response received',
+                                status: 'completed'
+                            });
+                        } catch (e) {
+                            console.error('Error updating bot message to completed:', e);
+                        }
+                    } else {
+                        // If bot message wasn't in database, create it now
+                        try {
+                            await this.callAPI('plugitify_send_message', {
+                                message: fullOutput || accumulatedContent || 'Response received',
+                                chat_id: this.currentChatId,
+                                role: 'assistant',
+                                status: 'completed'
+                            });
+                        } catch (e) {
+                            console.error('Error saving bot message:', e);
+                        }
+                    }
+                    
+                } catch (streamError) {
+                    console.error('Streaming error:', streamError);
+                    // Clear any pending update timeout
+                    clearTimeout(updateTimeout);
+                    
+                    // Fallback to regular chat if streaming fails
+                    const userMsg = new UserMessage(messageContent);
+                    const response = await this.agent.chat([...chatHistory, userMsg]);
+                    
+                    fullOutput = existingContent + (response.getContent() || 'Response received');
+                    if (botMessageIndex >= 0) {
+                        this.currentMessages[botMessageIndex].content = fullOutput;
+                        this.currentMessages[botMessageIndex].isStreaming = false;
+                    }
+                    
+                    // Update message in database with final content and status "completed"
+                    if (botMessageId) {
+                        try {
+                            await this.callAPI('plugitify_update_message', {
+                                message_id: botMessageId,
+                                content: fullOutput,
+                                status: 'completed'
+                            });
+                        } catch (e) {
+                            console.error('Error updating bot message to completed:', e);
+                        }
+                    } else {
+                        // If bot message wasn't in database, create it now
+                        try {
+                            await this.callAPI('plugitify_send_message', {
+                                message: fullOutput,
+                                chat_id: this.currentChatId,
+                                role: 'assistant',
+                                status: 'completed'
+                            });
+                        } catch (e) {
+                            console.error('Error saving bot message:', e);
+                        }
+                    }
+                }
+                
+                this.isLoading = false;
+                
+            } catch (error) {
+                console.error('Error continuing message:', error);
+                this.errorMessage = error.message || 'An error occurred. Please try again.';
+                this.isLoading = false;
+            } finally {
+                this.$refs.messageInput?.focus();
+            }
         },
         async loadAISettings() {
             try {

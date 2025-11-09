@@ -212,7 +212,6 @@ class Plugitify_Admin_Menu {
         
         <style>
             .plugitify-dashboard {
-                max-width: 1400px;
                 margin: 0;
                 padding: 30px 20px;
                 background: #f5f5f5;
@@ -948,8 +947,7 @@ class Plugitify_Admin_Menu {
             $tasks = [$tasks];
         }
         
-        // Reverse array to show oldest first (newest last)
-        $tasks = array_reverse($tasks);
+        // Tasks are already ordered by created_at DESC (newest first)
         
         // Get steps for each task
         global $wpdb;

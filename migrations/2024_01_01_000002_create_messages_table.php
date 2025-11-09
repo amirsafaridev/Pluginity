@@ -14,9 +14,11 @@ class Plugitify_CreateMessagesTable {
             $table->string('role', 50); // user, assistant, system
             $table->text('content'); // محتوای پیام
             $table->text('metadata')->nullable(); // داده‌های اضافی (JSON)
+            $table->text('status')->nullable(); // pending, completed
             $table->integer('tokens')->nullable()->default(0); // تعداد توکن‌های استفاده شده
             $table->timestamp('created_at')->default('CURRENT_TIMESTAMP');
             $table->timestamp('updated_at')->nullable();
+
         });
     }
     

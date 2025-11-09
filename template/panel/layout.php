@@ -91,6 +91,7 @@
                         
                         
                     </div>
+                   
                 </div>
                 <div v-if="errorMessage" class="ai-error-message">
                     <span class="ai-error-message__text">{{ errorMessage }}</span>
