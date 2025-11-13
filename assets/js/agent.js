@@ -1473,15 +1473,9 @@ class DeepseekProvider {
         } catch (error) {
             console.error('Deepseek API Error:', error);
             
-            // Return error as ToolCallResultMessage to continue to next step
-            const errorTool = new Tool('api_error', 'API Error');
-            errorTool.setCallId('error_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9));
-            const errorDetails = `ERROR: ${error.message || 'Unknown error'}\n\nAPI request failed. Please try using a different approach or tool.`;
-            errorTool.setResult(errorDetails);
-            errorTool.error = error.message || 'Unknown error';
-            
-            const toolCallResult = new ToolCallResultMessage([errorTool]);
-            return toolCallResult;
+            // Throw error to stop Agent and let layout.js handle it
+            // This prevents infinite loops and repetitive messages
+            throw error;
         }
     }
 
@@ -1696,18 +1690,9 @@ class DeepseekProvider {
         } catch (error) {
             console.error('Deepseek Stream Error:', error);
             
-            // Yield error as a special chunk instead of throwing
-            // This allows the Agent to handle it as a tool result
-            const errorTool = new Tool('api_error', 'API Error');
-            errorTool.setCallId('error_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9));
-            const errorDetails = `ERROR: ${error.message || 'Unknown error'}\n\nAPI request failed. Please try using a different approach or tool.`;
-            errorTool.setResult(errorDetails);
-            errorTool.error = error.message || 'Unknown error';
-            
-            yield {
-                error: true,
-                toolResult: new ToolCallResultMessage([errorTool])
-            };
+            // Throw error to stop stream and let layout.js handle it
+            // This prevents infinite loops and repetitive messages
+            throw error;
         }
     }
 }
