@@ -477,6 +477,16 @@ createApp({
                 return result;
             });
             
+            const zipPluginForReviewTool = new Tool('zip_plugin_for_review', 'Package an entire WordPress plugin into a ZIP archive and encode it as base64 for comprehensive AI review. This tool creates a complete archive of the plugin (excluding vendor, node_modules, .git, etc.) and provides it in a format that allows the AI model to review all files for syntax errors, logical errors, code quality issues, WordPress best practices, and potential bugs. Use this tool when you need to thoroughly review and test a complete plugin.');
+            zipPluginForReviewTool.addProperty(new ToolProperty('plugin_name', 'string', 'REQUIRED: The name/slug of the plugin directory to package and review. Example: \'my-plugin\' or the plugin folder name. This parameter is MANDATORY and must be provided.', true));
+            zipPluginForReviewTool.setCallable(async (plugin_name) => {
+                const result = await callToolAPI('zip_plugin_for_review', { 
+                    plugin_name: plugin_name
+                });
+                // The result contains the zip_base64 data which the AI model can decode and review
+                return result;
+            });
+            
             return [
                 createDirectoryTool,
                 createFileTool,
@@ -492,7 +502,8 @@ createApp({
                 checkWpDebugStatusTool,
                 searchReplaceInFileTool,
                 updateChatTitleTool,
-                getChatTasksTool
+                getChatTasksTool,
+                zipPluginForReviewTool
             ];
         },
         /**
@@ -570,6 +581,15 @@ createApp({
                 { order: 0 }
             );
             
+            // CRITICAL: Must use tools, not just text responses
+            this.agent.addPrompt(
+                'MANDATORY: Use Tools, Not Just Text',
+                'workflow',
+                'critical',
+                `🚨 CRITICAL: You MUST use tools to complete tasks. DO NOT just respond with text saying you've done something. If you say you've done work, you MUST have actually called tools to do it. NEVER claim work is done without using tools. If you need to check something, use a tool. If you need to create something, use a tool. If you need to read something, use a tool. Text-only responses that claim work is done are NOT acceptable. You MUST demonstrate your work through tool calls.`,
+                { order: 0.5 }
+            );
+            
             // TOOLS SECTION - Critical Tool Limitations (Split into smaller prompts)
             this.agent.addPrompt(
                 'search_replace_in_file: Size Limits',
@@ -642,6 +662,14 @@ createApp({
                 'critical',
                 `When starting a NEW conversation or beginning NEW work in this chat, call get_chat_tasks tool ONCE at the very beginning to review what has been done previously. After completing all work, optionally call get_chat_tasks at the end to show final status. DO NOT call get_chat_tasks repeatedly for every tool call or action - only check tasks at the START of new work and optionally at the END. During normal tool execution, focus on the work itself without checking tasks.`,
                 { order: 2 }
+            );
+            
+            this.agent.addPrompt(
+                'Workflow: MANDATORY Plugin Review After Completion',
+                'workflow',
+                'critical',
+                `🚨 ABSOLUTELY MANDATORY FINAL STEP: After completing ALL work on a plugin (creating, editing, modifying, or updating plugin files), you MUST ALWAYS use zip_plugin_for_review tool to package and review the entire plugin. This is NOT optional - it is a REQUIRED final step. You MUST check the plugin for syntax errors, logical errors, code quality issues, and WordPress best practices. This review MUST happen AFTER all code changes are complete and BEFORE you inform the user that the work is finished. NEVER skip this step. ALWAYS use zip_plugin_for_review as the final verification step after completing any plugin work.`,
+                { order: 2.5 }
             );
             
             this.agent.addPrompt(
@@ -942,6 +970,14 @@ createApp({
                 'high',
                 `Implement proper error handling: Use try-catch blocks for critical operations, log errors appropriately, provide user-friendly error messages, validate data before processing, handle edge cases gracefully.`,
                 { order: 7 }
+            );
+            
+            this.agent.addPrompt(
+                'Code Quality: Final Review Required',
+                'code_quality',
+                'critical',
+                `MANDATORY: After completing all code changes, you MUST use zip_plugin_for_review tool to perform a comprehensive review of the entire plugin. Check for: PHP syntax errors, logical errors, missing security validations, WordPress coding standards violations, performance issues, and best practices. This final review is REQUIRED and must be done before declaring work complete.`,
+                { order: 7.5 }
             );
             
             this.agent.addPrompt(

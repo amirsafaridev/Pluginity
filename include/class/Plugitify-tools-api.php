@@ -24,6 +24,7 @@ class Plugitify_Tools_API {
         add_action('wp_ajax_plugitify_tool_search_replace_in_file', array($this, 'handle_search_replace_in_file'));
         add_action('wp_ajax_plugitify_tool_update_chat_title', array($this, 'handle_update_chat_title'));
         add_action('wp_ajax_plugitify_tool_get_chat_tasks', array($this, 'handle_get_chat_tasks'));
+        add_action('wp_ajax_plugitify_tool_zip_plugin_for_review', array($this, 'handle_zip_plugin_for_review'));
     }
 
     /**
@@ -230,6 +231,11 @@ class Plugitify_Tools_API {
             case 'check_wp_debug_status':
                 // No additional details needed
                 break;
+            case 'zip_plugin_for_review':
+                if (isset($details['plugin_name'])) {
+                    $parts[] = "Plugin: {$details['plugin_name']}";
+                }
+                break;
         }
         
         return implode(' | ', $parts);
@@ -253,6 +259,7 @@ class Plugitify_Tools_API {
             'read_debug_log' => 'Reading WordPress debug log',
             'check_wp_debug_status' => 'Checking WP_DEBUG status',
             'search_replace_in_file' => 'Searching and replacing text in file',
+            'zip_plugin_for_review' => 'Packaging plugin for comprehensive review',
         ];
         
         $baseDesc = $descriptions[$toolName] ?? "Executing tool: {$toolName}";
@@ -2119,6 +2126,174 @@ class Plugitify_Tools_API {
                 'failed' => $failedTasks
             ],
             'track_progress' => $track_progress
+        ));
+    }
+
+    /**
+     * Handle zip_plugin_for_review tool
+     * Creates a zip archive of the plugin and returns it as base64 encoded string for AI review
+     */
+    public function handle_zip_plugin_for_review() {
+        $startTime = microtime(true);
+        $context = $this->validateRequest(); // Nonce verified in validateRequest()
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified in validateRequest()
+        $plugin_name = isset($_POST['plugin_name']) ? sanitize_text_field(wp_unslash($_POST['plugin_name'])) : '';
+        
+        $details = ['plugin_name' => $plugin_name];
+        
+        if (empty($plugin_name)) {
+            $duration = microtime(true) - $startTime;
+            $this->createTaskAfterExecution('zip_plugin_for_review', $details, false, 'Plugin name is required', $duration);
+            wp_send_json_error(array('message' => 'Plugin name is required'));
+            return;
+        }
+
+        $pluginsDir = $this->getPluginsDir();
+        $plugin_name = trim($plugin_name, '/\\');
+        $plugin_path = rtrim($pluginsDir, '/\\') . '/' . $plugin_name;
+        $plugin_path = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $plugin_path);
+        
+        // Check if path is protected (Pluginity plugin directory)
+        if ($this->isProtectedPath($plugin_name)) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'ERROR: Cannot zip the Pluginity/plugitify plugin directory. This is a protected system plugin.';
+            $this->createTaskAfterExecution('zip_plugin_for_review', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
+            return;
+        }
+        
+        if (!is_dir($plugin_path)) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Plugin directory not found: {$plugin_path}";
+            $this->createTaskAfterExecution('zip_plugin_for_review', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
+            return;
+        }
+
+        // Check if ZipArchive class is available
+        if (!class_exists('ZipArchive')) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = 'ZipArchive class is not available on this server. Cannot create zip file.';
+            $this->createTaskAfterExecution('zip_plugin_for_review', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
+            return;
+        }
+
+        // Create temporary zip file
+        $tempZipPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'plugitify_' . $plugin_name . '_' . time() . '.zip';
+        
+        $zip = new \ZipArchive();
+        if ($zip->open($tempZipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Failed to create zip file: {$tempZipPath}";
+            $this->createTaskAfterExecution('zip_plugin_for_review', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
+            return;
+        }
+
+        // Recursive function to add files to zip
+        $addFilesToZip = function($dir, $zip, $basePath = '') use (&$addFilesToZip) {
+            $items = scandir($dir);
+            foreach ($items as $item) {
+                if ($item === '.' || $item === '..') {
+                    continue;
+                }
+                
+                $item_path = $dir . DIRECTORY_SEPARATOR . $item;
+                $relative_path = $basePath ? $basePath . '/' . $item : $item;
+                
+                // Skip common directories that shouldn't be included
+                if (in_array($item, ['vendor', 'node_modules', '.git', '.svn', '.idea', '.vscode', '.DS_Store'])) {
+                    continue;
+                }
+                
+                if (is_dir($item_path)) {
+                    $addFilesToZip($item_path, $zip, $relative_path);
+                } elseif (is_file($item_path)) {
+                    // Add file to zip
+                    $zip->addFile($item_path, $relative_path);
+                }
+            }
+        };
+
+        // Add all files to zip
+        $addFilesToZip($plugin_path, $zip);
+        $zip->close();
+
+        // Read zip file content
+        $zipContent = file_get_contents($tempZipPath);
+        
+        // Clean up temporary file
+        if (file_exists($tempZipPath)) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Temporary file cleanup
+            @unlink($tempZipPath);
+        }
+
+        if ($zipContent === false) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = "Failed to read zip file content";
+            $this->createTaskAfterExecution('zip_plugin_for_review', $details, false, $errorMsg, $duration);
+            wp_send_json_error(array('message' => $errorMsg));
+            return;
+        }
+
+        // Encode zip content as base64
+        $zipBase64 = base64_encode($zipContent);
+        $zipSize = strlen($zipContent);
+        $zipSizeFormatted = size_format($zipSize);
+
+        // Count files in plugin
+        $fileCount = 0;
+        $dirCount = 0;
+        $scanCount = function($dir) use (&$scanCount, &$fileCount, &$dirCount) {
+            $items = scandir($dir);
+            foreach ($items as $item) {
+                if ($item === '.' || $item === '..') {
+                    continue;
+                }
+                $item_path = $dir . DIRECTORY_SEPARATOR . $item;
+                if (in_array($item, ['vendor', 'node_modules', '.git', '.svn', '.idea', '.vscode', '.DS_Store'])) {
+                    continue;
+                }
+                if (is_dir($item_path)) {
+                    $dirCount++;
+                    $scanCount($item_path);
+                } elseif (is_file($item_path)) {
+                    $fileCount++;
+                }
+            }
+        };
+        $scanCount($plugin_path);
+
+        // Build result message
+        $result = "Plugin '{$plugin_name}' has been packaged for review.\n\n";
+        $result .= "Plugin Information:\n";
+        $result .= "  • Plugin Name: {$plugin_name}\n";
+        $result .= "  • Plugin Path: {$plugin_path}\n";
+        $result .= "  • Total Files: {$fileCount}\n";
+        $result .= "  • Total Directories: {$dirCount}\n";
+        $result .= "  • Zip Size: {$zipSizeFormatted} ({$zipSize} bytes)\n\n";
+        $result .= "The plugin has been compressed into a ZIP archive and encoded as base64.\n";
+        $result .= "The AI model can now review the entire plugin code for syntax errors, logical errors, and best practices.\n\n";
+        $result .= "ZIP Archive (Base64 Encoded):\n";
+        $result .= str_repeat("=", 80) . "\n";
+        $result .= $zipBase64;
+        $result .= "\n" . str_repeat("=", 80) . "\n\n";
+        $result .= "Note: This is a base64-encoded ZIP file. The AI model should decode it and extract all files to review the plugin code comprehensively.";
+
+        $duration = microtime(true) - $startTime;
+        $this->createTaskAfterExecution('zip_plugin_for_review', $details, true, $result, $duration);
+        
+        // Return both the formatted message and the zip data separately for easier processing
+        wp_send_json_success(array(
+            'result' => $result,
+            'zip_base64' => $zipBase64,
+            'zip_size' => $zipSize,
+            'zip_size_formatted' => $zipSizeFormatted,
+            'file_count' => $fileCount,
+            'directory_count' => $dirCount,
+            'plugin_name' => $plugin_name,
+            'plugin_path' => $plugin_path
         ));
     }
 }
