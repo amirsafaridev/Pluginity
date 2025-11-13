@@ -273,6 +273,53 @@ class Plugitify_Tools_API {
     }
 
     /**
+     * Helper method to intelligently prepare result for JSON response
+     * If result is a JSON string, parse it to array/object for better performance
+     * This reduces parsing overhead in frontend for large JSON responses
+     * 
+     * @param mixed $result The result to prepare (string, array, object, etc.)
+     * @param int $minSize Minimum size in bytes to attempt JSON parsing (default: 1000 for 1KB)
+     * @return mixed Parsed result (array/object if JSON string, otherwise original)
+     */
+    private function prepareResultForResponse($result, $minSize = 1000) {
+        // If result is a string, check if it's JSON
+        if (is_string($result) && !empty($result)) {
+            $strLen = strlen($result);
+            
+            // Only attempt parsing for large strings (to avoid overhead on small strings)
+            if ($strLen >= $minSize) {
+                // Check if string looks like JSON (starts with { or [)
+                $trimmed = trim($result);
+                if (!empty($trimmed) && ($trimmed[0] === '{' || $trimmed[0] === '[')) {
+                    // For large JSON strings, parse in backend (PHP is faster than JS for large JSON)
+                    $decoded = json_decode($result, true);
+                    if (json_last_error() === JSON_ERROR_NONE) {
+                        // Successfully parsed - return as array/object
+                        // WordPress will JSON encode this, but frontend receives already-parsed structure
+                        // This is more efficient than parsing huge JSON strings in browser
+                        return $decoded;
+                    }
+                }
+            }
+        }
+        
+        // Return original result if not JSON, too small, or parsing failed
+        return $result;
+    }
+
+    /**
+     * Wrapper for wp_send_json_success that automatically optimizes large JSON results
+     * Use this instead of wp_send_json_success when returning tool results
+     * 
+     * @param mixed $result The result to send (will be auto-optimized if large JSON string)
+     * @param string $key The key in response array (default: 'result')
+     */
+    private function sendToolResult($result, $key = 'result') {
+        $preparedResult = $this->prepareResultForResponse($result);
+        wp_send_json_success(array($key => $preparedResult));
+    }
+
+    /**
      * Common validation for all tool endpoints
      */
     private function validateRequest(): array {

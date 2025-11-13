@@ -142,6 +142,44 @@ class ToolProperty {
             schema.enum = this.enum;
         }
 
+        // Fix: Add items property for array types
+        if (this.type === 'array') {
+            // For replacements array, each item is an object with search, replace, and optional replace_all
+            if (this.name === 'replacements') {
+                schema.items = {
+                    type: 'object',
+                    properties: {
+                        search: {
+                            type: 'string',
+                            description: 'The text to search for (max 300 characters)'
+                        },
+                        replace: {
+                            type: 'string',
+                            description: 'The replacement text (max 300 characters)'
+                        },
+                        replace_all: {
+                            type: 'boolean',
+                            description: 'If true, replace all occurrences; if false, replace only the first occurrence (default: true)'
+                        },
+                        search_encoded: {
+                            type: 'string',
+                            description: 'Set to "1" if search is base64 encoded'
+                        },
+                        replace_encoded: {
+                            type: 'string',
+                            description: 'Set to "1" if replace is base64 encoded'
+                        }
+                    },
+                    required: ['search', 'replace']
+                };
+            } else {
+                // Generic array type - default to string array
+                schema.items = {
+                    type: 'string'
+                };
+            }
+        }
+
         return schema;
     }
 }
@@ -1011,6 +1049,37 @@ class Agent {
     }
 
     /**
+     * Optimize tool result content for large JSON strings
+     * Parses and re-stringifies large JSON strings to avoid double escaping
+     * This improves performance when JSON.stringify(body) is called
+     */
+    _optimizeToolResultContent(result) {
+        if (typeof result === 'string') {
+            // برای JSON string های بزرگ، parse و دوباره stringify می‌کنیم
+            // تا escape اضافی نداشته باشیم و JSON.stringify(body) سریع‌تر باشد
+            if (result.length > 1000) {
+                const trimmed = result.trim();
+                if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && 
+                    (trimmed.endsWith('}') || trimmed.endsWith(']'))) {
+                    try {
+                        // Parse می‌کنیم تا escape اضافی نداشته باشیم
+                        const parsed = JSON.parse(result);
+                        // دوباره stringify می‌کنیم به صورت compact
+                        return JSON.stringify(parsed);
+                    } catch (e) {
+                        // اگر parse نشد، به صورت string می‌فرستیم
+                        return result;
+                    }
+                }
+            }
+            return result;
+        } else {
+            // اگر object است، stringify می‌کنیم
+            return JSON.stringify(result);
+        }
+    }
+
+    /**
      * Format messages for provider
      */
     _formatMessagesForProvider(messages) {
@@ -1038,7 +1107,8 @@ class Agent {
                     } else if (result === null || result === undefined) {
                         content = JSON.stringify({ error: 'Tool execution returned no result' });
                     } else {
-                        content = typeof result === 'string' ? result : JSON.stringify(result);
+                        // استفاده از helper method برای بهینه‌سازی JSON های بزرگ
+                        content = this._optimizeToolResultContent(result);
                     }
                     formatted.push({
                         role: 'tool',
@@ -1201,6 +1271,37 @@ class DeepseekProvider {
     }
 
     /**
+     * Optimize tool result content for large JSON strings
+     * Parses and re-stringifies large JSON strings to avoid double escaping
+     * This improves performance when JSON.stringify(body) is called
+     */
+    optimizeToolResultContent(result) {
+        if (typeof result === 'string') {
+            // برای JSON string های بزرگ، parse و دوباره stringify می‌کنیم
+            // تا escape اضافی نداشته باشیم و JSON.stringify(body) سریع‌تر باشد
+            if (result.length > 1000) {
+                const trimmed = result.trim();
+                if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && 
+                    (trimmed.endsWith('}') || trimmed.endsWith(']'))) {
+                    try {
+                        // Parse می‌کنیم تا escape اضافی نداشته باشیم
+                        const parsed = JSON.parse(result);
+                        // دوباره stringify می‌کنیم به صورت compact
+                        return JSON.stringify(parsed);
+                    } catch (e) {
+                        // اگر parse نشد، به صورت string می‌فرستیم
+                        return result;
+                    }
+                }
+            }
+            return result;
+        } else {
+            // اگر object است، stringify می‌کنیم
+            return JSON.stringify(result);
+        }
+    }
+
+    /**
      * Chat method
      */
     async chat(options) {
@@ -1260,7 +1361,8 @@ class DeepseekProvider {
                     } else if (result === null || result === undefined) {
                         content = JSON.stringify({ error: 'Tool execution returned no result' });
                     } else {
-                        content = typeof result === 'string' ? result : JSON.stringify(result);
+                        // استفاده از helper method برای بهینه‌سازی JSON های بزرگ
+                        content = this.optimizeToolResultContent(result);
                     }
                     formattedMessages.push({
                         role: 'tool',
@@ -1308,6 +1410,27 @@ class DeepseekProvider {
             body.tools = tools;
             body.tool_choice = 'auto';
         }
+        
+        // بهینه‌سازی نهایی: اگر tool content های بزرگ هنوز string هستند، آنها را parse و دوباره stringify می‌کنیم
+        // این کار باعث می‌شود JSON.stringify(body) سریع‌تر باشد
+        if (body.messages && Array.isArray(body.messages)) {
+            body.messages = body.messages.map(msg => {
+                if (msg.role === 'tool' && typeof msg.content === 'string' && msg.content.length > 1000) {
+                    const trimmed = msg.content.trim();
+                    if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && 
+                        (trimmed.endsWith('}') || trimmed.endsWith(']'))) {
+                        try {
+                            const parsed = JSON.parse(msg.content);
+                            msg.content = JSON.stringify(parsed);
+                        } catch (e) {
+                            // اگر parse نشد، بدون تغییر می‌ماند
+                        }
+                    }
+                }
+                return msg;
+            });
+        }
+        
         console.warn('Request Body:', body);
         try {
             const response = await fetch(`${this.baseURL}/chat/completions`, {
@@ -1422,7 +1545,8 @@ class DeepseekProvider {
                     } else if (result === null || result === undefined) {
                         content = JSON.stringify({ error: 'Tool execution returned no result' });
                     } else {
-                        content = typeof result === 'string' ? result : JSON.stringify(result);
+                        // استفاده از helper method برای بهینه‌سازی JSON های بزرگ
+                        content = this.optimizeToolResultContent(result);
                     }
                     formattedMessages.push({
                         role: 'tool',
@@ -1469,6 +1593,26 @@ class DeepseekProvider {
         if (tools && tools.length > 0) {
             body.tools = tools;
             body.tool_choice = 'auto';
+        }
+        
+        // بهینه‌سازی نهایی: اگر tool content های بزرگ هنوز string هستند، آنها را parse و دوباره stringify می‌کنیم
+        // این کار باعث می‌شود JSON.stringify(body) سریع‌تر باشد
+        if (body.messages && Array.isArray(body.messages)) {
+            body.messages = body.messages.map(msg => {
+                if (msg.role === 'tool' && typeof msg.content === 'string' && msg.content.length > 1000) {
+                    const trimmed = msg.content.trim();
+                    if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && 
+                        (trimmed.endsWith('}') || trimmed.endsWith(']'))) {
+                        try {
+                            const parsed = JSON.parse(msg.content);
+                            msg.content = JSON.stringify(parsed);
+                        } catch (e) {
+                            // اگر parse نشد، بدون تغییر می‌ماند
+                        }
+                    }
+                }
+                return msg;
+            });
         }
         
         try {
