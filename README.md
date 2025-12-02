@@ -26,7 +26,6 @@
 - [FAQ](#-faq)
 - [Developer Information](#-developer-information)
 - [Screenshots](#-screenshots)
-- [Contributing](#-contributing)
 - [License](#-license)
 
 ---
@@ -184,14 +183,6 @@ Plugitify supports multiple AI providers and models, giving you flexibility in A
 5. Log in to your WordPress admin dashboard
 6. Navigate to **Plugins** → **Installed Plugins**
 7. Find **Plugitify** in the list and click **Activate**
-
-### Method 3: WordPress CLI
-
-If you have WP-CLI installed, you can install and activate the plugin using:
-
-```bash
-wp plugin install plugitify --activate
-```
 
 ### System Requirements
 
@@ -371,18 +362,6 @@ The plugin uses standard WordPress hooks and filters. Developers can extend func
 ## 📸 Screenshots
 
 > Screenshots coming soon! Check back later for visual demonstrations of Plugitify's interface and features.
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
 
 ---
 
