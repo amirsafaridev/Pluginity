@@ -388,6 +388,9 @@ class Agent {
             lastError: null,
             maxRetries: 1  // Maximum consecutive errors before throwing
         };
+        // Stream depth tracker to prevent infinite recursion
+        this.streamDepth = 0;
+        this.maxStreamDepth = 50; // Maximum recursion depth for stream calls
     }
 
     /**
@@ -910,6 +913,13 @@ class Agent {
      * Stream chat method
      */
     async *stream(messages) {
+        // Prevent infinite recursion
+        this.streamDepth++;
+        if (this.streamDepth > this.maxStreamDepth) {
+            this.streamDepth = 0; // Reset before throwing
+            throw new Error(`Maximum stream depth (${this.maxStreamDepth}) exceeded. Possible infinite loop detected.`);
+        }
+        
         this.notify('stream-start');
 
         const messageArray = Array.isArray(messages) ? messages : [messages];
@@ -917,6 +927,7 @@ class Agent {
         // Add messages to history
         for (const message of messageArray) {
             if (!(message instanceof Message)) {
+                this.streamDepth = 0; // Reset before throwing
                 throw new Error('All messages must be instances of Message');
             }
             
@@ -955,7 +966,13 @@ class Agent {
                 this.notify('message-saved', { message: chunk.toolResult });
                 
                 // Continue stream to let AI see the error and respond
-                yield* this.stream([]);
+                // Only continue if we haven't exceeded max depth
+                if (this.streamDepth < this.maxStreamDepth) {
+                    yield* this.stream([]);
+                } else {
+                    console.error('Stream depth limit reached, stopping recursive stream call');
+                }
+                this.streamDepth = 0; // Reset before returning
                 return;
             }
             
@@ -1007,6 +1024,8 @@ class Agent {
             this.notify('message-saved', { message: response });
         }
 
+        // Reset stream depth when stream completes
+        this.streamDepth = 0;
         this.notify('stream-stop');
     }
 
@@ -1268,6 +1287,13 @@ class DeepseekProvider {
         this.baseURL = config.baseURL || 'https://api.deepseek.com/v1';
         this.model = config.model || 'deepseek-chat';
         this.temperature = config.temperature || 0;
+        // Structured Output configuration
+        // Can be: null (disabled), { type: "json_object" }, or { type: "json_schema", json_schema: {...} }
+        // Default: { type: "json_object" } - Always return JSON responses
+        // Note: When enabled, the model will always return valid JSON
+        this.responseFormat = config.responseFormat !== undefined 
+            ? config.responseFormat 
+            : { type: "json_object" };
     }
 
     /**
@@ -1411,6 +1437,11 @@ class DeepseekProvider {
             body.tool_choice = 'auto';
         }
         
+        // Add Structured Output if configured
+        if (this.responseFormat) {
+            body.response_format = this.responseFormat;
+        }
+        
         // بهینه‌سازی نهایی: اگر tool content های بزرگ هنوز string هستند، آنها را parse و دوباره stringify می‌کنیم
         // این کار باعث می‌شود JSON.stringify(body) سریع‌تر باشد
         if (body.messages && Array.isArray(body.messages)) {
@@ -1441,7 +1472,7 @@ class DeepseekProvider {
                 },
                 body: JSON.stringify(body)
             });
-            
+            console.warn('Response:', response);
             if (!response.ok) {
                 const error = await response.json();
                 throw new Error(error.error?.message || `HTTP ${response.status}: ${response.statusText}`);
@@ -1449,11 +1480,14 @@ class DeepseekProvider {
             
             const data = await response.json();
             const choice = data.choices[0];
-            
+            console.warn('Choice:', choice);
+            console.warn('Choice Message:', choice.message);
+            console.warn('Choice Message Tool Calls:', choice.message.tool_calls);
             // Handle tool calls
             if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
                 const toolCallMessage = new ToolCallMessage();
                 for (const toolCall of choice.message.tool_calls) {
+                    console.warn('Tool Call:', toolCall);
                     const tool = new Tool(toolCall.function.name, '');
                     tool.setInputs(JSON.parse(toolCall.function.arguments || '{}'));
                     tool.setCallId(toolCall.id);
@@ -1587,6 +1621,12 @@ class DeepseekProvider {
         if (tools && tools.length > 0) {
             body.tools = tools;
             body.tool_choice = 'auto';
+        }
+        
+        // Add Structured Output if configured
+        // Note: Some providers may not support response_format with streaming
+        if (this.responseFormat) {
+            body.response_format = this.responseFormat;
         }
         
         // بهینه‌سازی نهایی: اگر tool content های بزرگ هنوز string هستند، آنها را parse و دوباره stringify می‌کنیم

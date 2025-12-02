@@ -570,7 +570,7 @@ createApp({
             }
             
             // Base instruction
-            this.agent.setInstructions('You are an expert WordPress plugin developer AI agent. Your role is to analyze user requirements, design plugin architecture, generate appropriate plugin names, and create complete WordPress plugin code.\n\nYou understand WordPress coding standards, hooks, filters, best practices, and plugin structure.\n\n⚠️ CRITICAL REQUIREMENT - MANDATORY FIRST STEP: ALWAYS use get_chat_tasks tool BEFORE doing ANY work and BEFORE responding to the user. This is MANDATORY and must be done FIRST. Check what tasks have been completed, what is in progress, and what is pending. This ensures continuity, avoids duplicate work, and helps you understand the full context of what has been done previously.');
+            this.agent.setInstructions('You are an expert WordPress plugin developer AI agent. Your role is to analyze user requirements, design plugin architecture, generate appropriate plugin names, and create complete WordPress plugin code.\n\nYou understand WordPress coding standards, hooks, filters, best practices, and plugin structure.\n\n⚠️ CRITICAL REQUIREMENT - MANDATORY FIRST STEP: ALWAYS use get_chat_tasks tool BEFORE doing ANY work and BEFORE responding to the user. This is MANDATORY and must be done FIRST. Check what tasks have been completed, what is in progress, and what is pending. This ensures continuity, avoids duplicate work, and helps you understand the full context of what has been done previously.\n\n📋 OUTPUT FORMAT: You MUST always respond with valid JSON format. All your responses should be valid JSON objects.');
             
             // CRITICAL: Mandatory get_chat_tasks usage
             this.agent.addPrompt(
@@ -702,6 +702,14 @@ createApp({
                 'critical',
                 `Before starting any work (creating plugins, editing plugins, making changes): First, provide a brief summary of the scenario/plan to the user and ask for confirmation. Wait for user approval before proceeding with tool calls. Only ask questions if information is truly needed to proceed - don't ask unnecessary questions. If all required information is clear, proceed with confirmation request.`,
                 { order: 5 }
+            );
+            
+            this.agent.addPrompt(
+                'Workflow: No Empty Claims - Use Tools',
+                'system',
+                'critical',
+                `NEVER claim you've done work without actually using tools. If you say "I've created the plugin" or "I've fixed the code" or "I've checked the file", you MUST have actually called the appropriate tools (create_file, read_file, edit_file_line, etc.). Empty claims without tool calls are false and unacceptable. Always use tools to demonstrate your work.`,
+                { order: 5.5 }
             );
             
             this.agent.addPrompt(
@@ -1206,17 +1214,24 @@ createApp({
                 // Debounce function for updating message in database
                 let updateTimeout = null;
                 let lastUpdateTime = 0;
+                let lastSavedContent = ''; // Track last saved content to prevent duplicate updates
                 const updateMessageInDB = (content, status = null, immediate = false) => {
                     if (!botMessageId) return;
+                    
+                    // Prevent updating if content hasn't changed (unless status changed or immediate)
+                    if (!immediate && status === null && content === lastSavedContent) {
+                        return; // Skip duplicate update
+                    }
                     
                     const now = Date.now();
                     const timeSinceLastUpdate = now - lastUpdateTime;
                     
-                    // If immediate flag is set or it's been more than 300ms since last update, update immediately
-                    if (immediate || timeSinceLastUpdate >= 300) {
+                    // If immediate flag is set or it's been more than 1000ms since last update, update immediately
+                    if (immediate || timeSinceLastUpdate >= 1000) {
                         clearTimeout(updateTimeout);
                         updateTimeout = null;
                         lastUpdateTime = now;
+                        lastSavedContent = content;
                         
                         // Update immediately
                         (async () => {
@@ -1231,7 +1246,7 @@ createApp({
                             }
                         })();
                     } else {
-                        // Debounce for frequent updates
+                        // Debounce for frequent updates - increased to 1000ms to reduce API calls
                         clearTimeout(updateTimeout);
                         updateTimeout = setTimeout(async () => {
                             try {
@@ -1241,10 +1256,11 @@ createApp({
                                 }
                                 await this.callAPI('plugitify_update_message', updateData);
                                 lastUpdateTime = Date.now();
+                                lastSavedContent = content;
                             } catch (e) {
                                 console.error('Error updating bot message in database:', e);
                             }
-                        }, 300); // Update every 300ms during streaming
+                        }, 1000); // Update every 1000ms during streaming (reduced frequency)
                     }
                 };
                 
@@ -1272,14 +1288,17 @@ createApp({
                         }
                         
                         // Handle content (only the displayed content, not tool parameters)
-                        if (chunk.content) {
+                        if (chunk.content && chunk.content.trim() !== '') {
                             accumulatedContent += chunk.content;
                             fullOutput = accumulatedContent;
                             if (botMessageIndex >= 0) {
                                 this.currentMessages[botMessageIndex].content = fullOutput;
                             }
                             // Update message in database with current content (debounced)
-                            updateMessageInDB(fullOutput);
+                            // Only update if we have meaningful content (not just whitespace)
+                            if (fullOutput.trim().length > 0) {
+                                updateMessageInDB(fullOutput);
+                            }
                             this.$forceUpdate();
                             this.$nextTick(() => {
                                 this.scrollToBottom();
@@ -1444,7 +1463,10 @@ createApp({
             const ajaxUrl = this.ajaxUrl || window.plugitifyConfig?.ajaxUrl || '';
             const nonce = this.nonce || window.plugitifyConfig?.nonce || '';
             
-            console.log('callAPI called:', { action, data, method });
+            // Only log in debug mode to reduce console noise
+            if (window.plugitifyConfig?.debug) {
+                console.log('callAPI called:', { action, data, method });
+            }
             
             let url = ajaxUrl;
             let options = {
@@ -1461,20 +1483,32 @@ createApp({
                     formData.append(key, data[key]);
                 }
                 options.body = formData;
-                console.log('POST request to:', url, 'with action:', action);
+                // Only log in debug mode
+                if (window.plugitifyConfig?.debug) {
+                    console.log('POST request to:', url, 'with action:', action);
+                }
             } else {
                 // GET request
                 url += '?action=' + encodeURIComponent(action) + '&nonce=' + encodeURIComponent(nonce);
                 for (let key in data) {
                     url += '&' + encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
                 }
-                console.log('GET request to:', url);
+                // Only log in debug mode
+                if (window.plugitifyConfig?.debug) {
+                    console.log('GET request to:', url);
+                }
             }
             
             try {
-                console.log('Fetching:', url, options);
+                // Only log in debug mode
+                if (window.plugitifyConfig?.debug) {
+                    console.log('Fetching:', url, options);
+                }
                 const response = await fetch(url, options);
-                console.log('Response received:', response.status, response.statusText);
+                // Only log errors or in debug mode
+                if (!response.ok || window.plugitifyConfig?.debug) {
+                    console.log('Response received:', response.status, response.statusText);
+                }
                 
                 // Try to parse response even if status is not ok
                 let result;
@@ -1649,7 +1683,7 @@ createApp({
         getLoadingText(message) {
             // If streaming and no tasks yet
             if (message.isStreaming && (!message.tasks || message.tasks.length === 0)) {
-                return 'Generating response...';
+                return 'Thinking...';
             }
             
             // If has active tasks
@@ -1671,7 +1705,7 @@ createApp({
                 
                 // If streaming but tasks completed
                 if (message.isStreaming) {
-                    return 'Generating response...';
+                    return 'Thinking...';
                 }
             }
             
